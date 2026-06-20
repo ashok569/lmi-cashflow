@@ -1,0 +1,1660 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LMI Cashflow Manager</title>
+<style>
+  :root{
+    --navy:#0f2540;
+    --navy-2:#16334f;
+    --paper:#f6f4ee;
+    --paper-2:#ffffff;
+    --ink:#1b2430;
+    --ink-soft:#5b6470;
+    --line:#dfe1e6;
+    --green:#1f7a4d;
+    --green-bg:#e6f4ec;
+    --amber:#9a6b14;
+    --amber-bg:#fbf0dd;
+    --red:#a4302a;
+    --red-bg:#fbeae8;
+    --blue:#1e4f8a;
+    --blue-bg:#e8f0fb;
+    --gold:#b8860b;
+    --mono: 'IBM Plex Mono','SFMono-Regular',Consolas,monospace;
+    --serif: 'Source Serif 4','Georgia',serif;
+    --sans: 'Inter','Segoe UI',system-ui,sans-serif;
+    --radius: 6px;
+    --shadow: 0 1px 2px rgba(15,37,64,.06), 0 1px 1px rgba(15,37,64,.04);
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;}
+  body{
+    font-family:var(--sans);
+    background:var(--paper);
+    color:var(--ink);
+    -webkit-font-smoothing:antialiased;
+    min-height:100vh;
+  }
+  ::selection{background:#c9d9ee;}
+
+  /* ---------- Top bar ---------- */
+  .topbar{
+    background:linear-gradient(180deg,var(--navy) 0%, var(--navy-2) 100%);
+    color:#eef2f7;
+    padding:14px 22px 0 22px;
+    box-shadow:0 2px 8px rgba(15,37,64,.18);
+  }
+  .topbar-inner{
+    display:flex; align-items:flex-end; justify-content:space-between; gap:18px;
+    max-width:1400px; margin:0 auto;
+  }
+  .brand{display:flex; align-items:center; gap:12px;}
+  .brand-mark{
+    width:34px;height:34px;border-radius:8px;
+    background:linear-gradient(135deg,#d9b65c,#a8791f);
+    display:flex;align-items:center;justify-content:center;
+    font-family:var(--serif); font-weight:700; color:#1a1306; font-size:16px;
+    box-shadow:inset 0 0 0 1px rgba(255,255,255,.25);
+  }
+  .brand-text h1{
+    font-family:var(--serif); font-size:18px; font-weight:600; margin:0; letter-spacing:.2px;
+    white-space:nowrap;
+  }
+  .brand-text span{
+    font-size:11px; color:#a9bdd6; letter-spacing:.08em; text-transform:uppercase;
+    white-space:nowrap;
+  }
+  @media (max-width: 480px){
+    .topbar-inner{flex-wrap:wrap;}
+    .brand-text span{display:none;}
+    .topbar-right{padding-bottom:8px;}
+  }
+  .topbar-right{display:flex; align-items:center; gap:14px; padding-bottom:10px;}
+  .fy-select{
+    background:rgba(255,255,255,.07);
+    border:1px solid rgba(255,255,255,.18);
+    color:#eef2f7;
+    padding:7px 10px;
+    border-radius:6px;
+    font-family:var(--sans);
+    font-size:13px;
+  }
+  .data-actions{display:flex; gap:6px;}
+  .icon-btn{
+    background:rgba(255,255,255,.07);
+    border:1px solid rgba(255,255,255,.18);
+    color:#dde6f0;
+    width:32px;height:32px;border-radius:6px;
+    display:flex;align-items:center;justify-content:center;
+    cursor:pointer; font-size:14px;
+    transition:background .15s;
+  }
+  .icon-btn:hover{background:rgba(255,255,255,.16);}
+
+  /* Month tabs */
+  .month-tabs{
+    max-width:1400px; margin:14px auto 0 auto;
+    display:flex; gap:2px; overflow-x:auto; padding-bottom:0;
+    scrollbar-width:thin;
+  }
+  .month-tab{
+    flex:0 0 auto;
+    padding:9px 16px 11px 16px;
+    font-size:13px; font-weight:600; letter-spacing:.02em;
+    color:#9fb3cc;
+    background:transparent;
+    border:none;
+    border-bottom:2px solid transparent;
+    cursor:pointer;
+    white-space:nowrap;
+    position:relative;
+    font-family:var(--sans);
+  }
+  .month-tab:hover{color:#dde6f0;}
+  .month-tab.active{
+    color:#fff;
+    border-bottom:2px solid var(--gold);
+    background:rgba(255,255,255,.05);
+    border-radius:6px 6px 0 0;
+  }
+  .month-tab .dot{
+    display:inline-block; width:6px;height:6px;border-radius:50%;
+    background:#5b86b8; margin-left:6px; position:relative; top:-1px;
+  }
+  .month-tab.future .dot{background:#7d8a9c;}
+  .month-tab.is-current{color:#fff;}
+
+  /* ---------- Layout ---------- */
+  .shell{
+    max-width:1400px; margin:0 auto; padding:20px 22px 60px 22px;
+    display:grid; grid-template-columns: 320px 1fr; gap:18px;
+  }
+  @media (max-width: 980px){
+    .shell{grid-template-columns:1fr;}
+  }
+
+  .panel{
+    background:var(--paper-2);
+    border:1px solid var(--line);
+    border-radius:var(--radius);
+    box-shadow:var(--shadow);
+  }
+  .panel-head{
+    padding:13px 16px; border-bottom:1px solid var(--line);
+    display:flex; align-items:center; justify-content:space-between;
+  }
+  .panel-head h2{
+    font-family:var(--serif); font-size:14.5px; font-weight:600; margin:0;
+    letter-spacing:.01em;
+  }
+  .panel-body{padding:14px 16px;}
+
+  /* ---------- Left column: Dashboard ---------- */
+  .left-col{display:flex; flex-direction:column; gap:16px;}
+
+  .balance-card{
+    background:linear-gradient(160deg,var(--navy) 0%, var(--navy-2) 100%);
+    color:#eef2f7; border-radius:var(--radius); padding:18px 18px 16px 18px;
+    box-shadow:var(--shadow);
+  }
+  .balance-card .label{
+    font-size:10.5px; text-transform:uppercase; letter-spacing:.09em; color:#9fb3cc; margin-bottom:4px;
+  }
+  .balance-card .amount{
+    font-family:var(--mono); font-size:27px; font-weight:600; letter-spacing:-.02em;
+  }
+  .balance-card .amount.neg{color:#f3a39c;}
+  .balance-sub{
+    display:flex; justify-content:space-between; margin-top:12px; padding-top:12px;
+    border-top:1px solid rgba(255,255,255,.14); font-size:12px;
+  }
+  .balance-sub div{display:flex; flex-direction:column; gap:3px;}
+  .balance-sub .v{font-family:var(--mono); font-size:14px; color:#eef2f7;}
+  .balance-sub .l{color:#9fb3cc; font-size:10.5px; text-transform:uppercase; letter-spacing:.07em;}
+
+  .stat-row{display:grid; grid-template-columns:1fr 1fr; gap:10px;}
+  .stat-box{
+    background:var(--paper-2); border:1px solid var(--line); border-radius:var(--radius);
+    padding:12px 13px;
+  }
+  .stat-box .l{font-size:10.5px; text-transform:uppercase; letter-spacing:.07em; color:var(--ink-soft); margin-bottom:5px;}
+  .stat-box .v{font-family:var(--mono); font-size:17px; font-weight:600;}
+  .stat-box.warn .v{color:var(--amber);}
+  .stat-box.bad .v{color:var(--red);}
+  .stat-box.good .v{color:var(--green);}
+
+  .recur-list{display:flex; flex-direction:column; gap:0;}
+  .recur-item{
+    display:flex; justify-content:space-between; align-items:center;
+    padding:9px 0; border-bottom:1px solid var(--line); font-size:12.5px; gap:8px;
+  }
+  .recur-item:last-child{border-bottom:none;}
+  .recur-item .nm{color:var(--ink); flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+  .recur-item .amt{font-family:var(--mono); font-weight:600; color:var(--ink-soft); flex:0 0 auto;}
+  .recur-item button{
+    border:none; background:none; color:#9aa6b5; cursor:pointer; padding:2px 4px; font-size:13px;
+  }
+  .recur-item button:hover{color:var(--blue);}
+
+  .empty-note{color:var(--ink-soft); font-size:12.5px; padding:10px 0; font-style:italic;}
+
+  /* ---------- Right column ---------- */
+  .right-col{display:flex; flex-direction:column; gap:16px;}
+
+  .action-bar{
+    display:flex; flex-wrap:wrap; gap:8px;
+    padding:14px 16px; background:var(--paper-2); border:1px solid var(--line); border-radius:var(--radius);
+    box-shadow:var(--shadow);
+  }
+  .btn{
+    font-family:var(--sans); font-size:12.5px; font-weight:600;
+    padding:8px 13px; border-radius:5px; border:1px solid var(--line);
+    background:#fff; color:var(--navy); cursor:pointer;
+    display:inline-flex; align-items:center; gap:6px;
+    transition:all .12s;
+  }
+  .btn:hover{border-color:var(--navy); background:#f3f6fa;}
+  .btn-primary{background:var(--navy); color:#fff; border-color:var(--navy);}
+  .btn-primary:hover{background:var(--navy-2);}
+  .btn-gold{background:var(--gold); color:#fff; border-color:var(--gold);}
+  .btn-gold:hover{background:#9c7209;}
+  .btn-ghost{background:transparent; border-color:transparent; color:var(--ink-soft);}
+  .btn-ghost:hover{background:#f0f1f3; color:var(--ink);}
+  .btn-sm{padding:5px 9px; font-size:11.5px;}
+  .btn-danger{color:var(--red);}
+  .btn-danger:hover{background:var(--red-bg); border-color:var(--red);}
+
+  /* Ledger / sheet-like table */
+  .ledger-wrap{display:grid; grid-template-columns:1fr 1fr; gap:16px;}
+  @media (max-width: 1180px){.ledger-wrap{grid-template-columns:1fr;}}
+
+  .ledger{background:var(--paper-2); border:1px solid var(--line); border-radius:var(--radius); box-shadow:var(--shadow); overflow:hidden;}
+  .ledger-head{
+    padding:11px 14px; display:flex; justify-content:space-between; align-items:center;
+    border-bottom:1px solid var(--line);
+  }
+  .ledger-head.receipts{background:var(--blue-bg);}
+  .ledger-head.payments{background:var(--green-bg);}
+  .ledger-head h3{font-family:var(--serif); font-size:13.5px; margin:0; font-weight:600;}
+  .ledger-head .tot{font-family:var(--mono); font-size:13.5px; font-weight:700;}
+  .ledger-rows{max-height:420px; overflow-y:auto;}
+  .lrow{
+    display:grid; grid-template-columns: 1fr auto auto auto; gap:8px; align-items:center;
+    padding:8px 14px; border-bottom:1px solid #eef0f2; font-size:12.5px;
+  }
+  .lrow:last-child{border-bottom:none;}
+  .lrow:hover{background:#fafbfc;}
+  .lrow .nm{min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+  .lrow .nm .star{color:var(--gold); margin-right:3px;}
+  .lrow .amt{font-family:var(--mono); font-weight:600; text-align:right; min-width:78px;}
+  .badge{
+    font-size:9.5px; text-transform:uppercase; letter-spacing:.05em; font-weight:700;
+    padding:3px 7px; border-radius:10px; white-space:nowrap;
+  }
+  .badge.recd, .badge.paid{background:var(--green-bg); color:var(--green);}
+  .badge.planned{background:var(--amber-bg); color:var(--amber);}
+  .badge.hold{background:var(--red-bg); color:var(--red);}
+  .row-actions{display:flex; gap:3px;}
+  .row-actions button{
+    border:none; background:none; cursor:pointer; color:#aab2bd; font-size:12.5px; padding:2px 4px;
+  }
+  .row-actions button:hover{color:var(--navy);}
+  .ledger-foot{padding:9px 14px; border-top:1px solid var(--line); display:flex; gap:8px;}
+
+  /* Receivables / FD / BG strip */
+  .strip-wrap{display:grid; grid-template-columns:1fr 1fr; gap:16px;}
+  @media (max-width: 1180px){.strip-wrap{grid-template-columns:1fr;}}
+
+  table.simple{width:100%; border-collapse:collapse; font-size:12.5px;}
+  table.simple th{
+    text-align:left; font-size:10.5px; text-transform:uppercase; letter-spacing:.06em;
+    color:var(--ink-soft); padding:8px 14px; border-bottom:1px solid var(--line); font-weight:600;
+  }
+  table.simple td{padding:8px 14px; border-bottom:1px solid #eef0f2;}
+  table.simple td.amt{font-family:var(--mono); text-align:right; font-weight:600;}
+  table.simple tr:last-child td{border-bottom:none;}
+
+  /* ---------- Modal ---------- */
+  .modal-backdrop{
+    position:fixed; inset:0; background:rgba(15,23,35,.45);
+    display:none; align-items:center; justify-content:center; z-index:100; padding:20px;
+  }
+  .modal-backdrop.open{display:flex;}
+  .modal{
+    background:#fff; border-radius:10px; width:100%; max-width:460px;
+    box-shadow:0 20px 60px rgba(15,23,35,.3);
+    max-height:88vh; overflow-y:auto;
+  }
+  .modal-head{
+    padding:16px 20px; border-bottom:1px solid var(--line);
+    display:flex; justify-content:space-between; align-items:center;
+  }
+  .modal-head h3{font-family:var(--serif); margin:0; font-size:16px;}
+  .modal-head button{background:none; border:none; font-size:18px; color:var(--ink-soft); cursor:pointer;}
+  .modal-body{padding:18px 20px;}
+  .field{margin-bottom:14px;}
+  .field label{display:block; font-size:11.5px; font-weight:600; color:var(--ink-soft); margin-bottom:5px; text-transform:uppercase; letter-spacing:.04em;}
+  .field input, .field select{
+    width:100%; padding:9px 11px; border:1px solid var(--line); border-radius:5px; font-size:13.5px;
+    font-family:var(--sans); background:#fcfcfb;
+  }
+  .field input:focus, .field select:focus{outline:none; border-color:var(--navy); background:#fff;}
+  .field-row{display:grid; grid-template-columns:1fr 1fr; gap:10px;}
+  .checkrow{display:flex; align-items:center; gap:8px; margin-bottom:14px;}
+  .checkrow input{width:auto;}
+  .checkrow label{margin:0; text-transform:none; font-size:13px; font-weight:500; color:var(--ink);}
+  .calc-line{
+    display:flex; justify-content:space-between; padding:7px 0; font-size:12.5px; color:var(--ink-soft);
+    border-bottom:1px dashed var(--line);
+  }
+  .calc-line.total{font-weight:700; color:var(--ink); border-bottom:none; font-size:14px; padding-top:9px;}
+  .calc-line span:last-child{font-family:var(--mono);}
+  .modal-foot{padding:14px 20px; border-top:1px solid var(--line); display:flex; justify-content:flex-end; gap:8px;}
+  .radio-pills{display:flex; gap:8px; margin-bottom:14px;}
+  .radio-pill{flex:1; text-align:center;}
+  .radio-pill input{display:none;}
+  .radio-pill label{
+    display:block; padding:9px; border:1px solid var(--line); border-radius:5px; cursor:pointer;
+    font-size:13px; font-weight:600; color:var(--ink-soft);
+  }
+  .radio-pill input:checked + label{background:var(--navy); color:#fff; border-color:var(--navy);}
+  .sub-list{max-height:220px; overflow-y:auto; border:1px solid var(--line); border-radius:6px; margin-bottom:10px;}
+  .sub-list-item{
+    padding:9px 12px; border-bottom:1px solid var(--line); cursor:pointer; font-size:13px;
+    display:flex; justify-content:space-between;
+  }
+  .sub-list-item:last-child{border-bottom:none;}
+  .sub-list-item:hover{background:#f5f7fa;}
+  .sub-list-item .amt{font-family:var(--mono); color:var(--ink-soft);}
+  .hint{font-size:11.5px; color:var(--ink-soft); margin-top:-8px; margin-bottom:14px;}
+  .toast{
+    position:fixed; bottom:24px; left:50%; transform:translateX(-50%) translateY(20px);
+    background:var(--navy); color:#fff; padding:11px 20px; border-radius:7px; font-size:13px;
+    box-shadow:0 8px 24px rgba(0,0,0,.2); opacity:0; transition:all .25s; z-index:200; pointer-events:none;
+  }
+  .toast.show{opacity:1; transform:translateX(-50%) translateY(0);}
+
+  ::-webkit-scrollbar{width:8px; height:8px;}
+  ::-webkit-scrollbar-thumb{background:#cdd3da; border-radius:4px;}
+  ::-webkit-scrollbar-track{background:transparent;}
+
+  .footer-note{
+    text-align:center; color:var(--ink-soft); font-size:11px; padding:18px 0 0 0; max-width:1400px; margin:0 auto;
+  }
+
+  /* ---------- Auth gate ---------- */
+  .auth-gate{
+    min-height:100vh; display:flex; align-items:center; justify-content:center;
+    background:linear-gradient(160deg,var(--navy) 0%, var(--navy-2) 60%, #1c3a5c 100%);
+    padding:20px;
+  }
+  .auth-card{
+    background:#fff; border-radius:12px; padding:32px 30px 28px 30px; width:100%; max-width:380px;
+    box-shadow:0 24px 70px rgba(0,0,0,.35);
+  }
+  .auth-error{
+    background:var(--red-bg); color:var(--red); font-size:12.5px; padding:9px 12px; border-radius:6px;
+    margin-bottom:14px;
+  }
+  .auth-switch{
+    text-align:center; font-size:12.5px; color:var(--ink-soft); margin-top:16px;
+  }
+  .auth-switch a{color:var(--navy); font-weight:600; text-decoration:none;}
+  .auth-switch a:hover{text-decoration:underline;}
+
+  /* ---------- Sync status ---------- */
+  .sync-status{
+    font-size:11px; color:#9fb3cc; display:flex; align-items:center; gap:5px;
+    letter-spacing:.03em;
+  }
+  .sync-status::before{content:none;}
+  .sync-status.ok{color:#7fd9a8;}
+  .sync-status.busy{color:#e8c97a;}
+  .sync-status.err{color:#f3a39c;}
+</style>
+</head>
+<body>
+
+<!-- ============ AUTH GATE ============ -->
+<div id="authGate" class="auth-gate">
+  <div class="auth-card">
+    <div class="brand" style="justify-content:center; margin-bottom:22px;">
+      <div class="brand-mark">LMI</div>
+      <div class="brand-text" style="text-align:left;">
+        <h1 style="color:var(--ink);">Cashflow Manager</h1>
+        <span style="color:var(--ink-soft);">Leadership Management International</span>
+      </div>
+    </div>
+
+    <div id="authSignIn">
+      <div class="field"><label>Email</label><input type="email" id="auth-email" placeholder="you@lmi-india.in" autocomplete="username"></div>
+      <div class="field"><label>Password</label><input type="password" id="auth-password" placeholder="&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;" autocomplete="current-password"></div>
+      <div id="authError" class="auth-error" style="display:none;"></div>
+      <button class="btn btn-primary" id="authSignInBtn" style="width:100%; justify-content:center; padding:11px;">Sign in</button>
+      <div class="auth-switch">First time setting this up? <a href="#" id="showFirstRun">Create the first account</a></div>
+    </div>
+
+    <div id="authFirstRun" style="display:none;">
+      <div class="hint" style="margin-bottom:14px;">This creates the first (admin) account for your team. Once you're in, use "Add user" in the app to add teammates.</div>
+      <div class="field"><label>Email</label><input type="email" id="fr-email" placeholder="ashok@lmi-india.in" autocomplete="username"></div>
+      <div class="field"><label>Password</label><input type="password" id="fr-password" placeholder="Choose a password" autocomplete="new-password"></div>
+      <div id="frError" class="auth-error" style="display:none;"></div>
+      <button class="btn btn-primary" id="authFirstRunBtn" style="width:100%; justify-content:center; padding:11px;">Create account &amp; sign in</button>
+      <div class="auth-switch">Already set up? <a href="#" id="showSignIn">Back to sign in</a></div>
+    </div>
+  </div>
+</div>
+
+<!-- ============ MAIN APP ============ -->
+<div id="mainApp" style="display:none;">
+
+<div class="topbar">
+  <div class="topbar-inner">
+    <div class="brand">
+      <div class="brand-mark">LMI</div>
+      <div class="brand-text">
+        <h1>Cashflow Manager</h1>
+        <span>Leadership Management International</span>
+      </div>
+    </div>
+    <div class="topbar-right">
+      <span class="sync-status" id="syncStatus">&#9679; Synced</span>
+      <select class="fy-select" id="fySelect"></select>
+      <div class="data-actions">
+        <button class="icon-btn" id="btnAddUser" title="Add user">&#128100;</button>
+        <button class="icon-btn" id="btnExport" title="Backup (download JSON)">&#8681;</button>
+        <button class="icon-btn" id="btnImport" title="Restore from backup">&#8679;</button>
+        <button class="icon-btn" id="btnSignOut" title="Sign out">&#9211;</button>
+        <input type="file" id="fileImport" accept="application/json" style="display:none;">
+      </div>
+    </div>
+  </div>
+  <div class="month-tabs" id="monthTabs"></div>
+</div>
+
+
+<div class="shell">
+
+  <!-- LEFT COLUMN -->
+  <div class="left-col">
+
+    <div class="balance-card">
+      <div class="label">Opening balance &mdash; <span id="obMonthLabel"></span></div>
+      <div class="amount" id="openingAmt">&#8377;0</div>
+      <div class="balance-sub">
+        <div>
+          <span class="l">Closing (projected)</span>
+          <span class="v" id="closingAmt">&#8377;0</span>
+        </div>
+        <div>
+          <span class="l">Anticipated status</span>
+          <span class="v" id="anticipatedAmt">&#8377;0</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="stat-row">
+      <div class="stat-box good">
+        <div class="l">Receipts in</div>
+        <div class="v" id="statReceipts">&#8377;0</div>
+      </div>
+      <div class="stat-box bad">
+        <div class="l">Payments out</div>
+        <div class="v" id="statPayments">&#8377;0</div>
+      </div>
+      <div class="stat-box warn">
+        <div class="l">Receivables o/s</div>
+        <div class="v" id="statReceivables">&#8377;0</div>
+      </div>
+      <div class="stat-box">
+        <div class="l">Held back / on hold</div>
+        <div class="v" id="statHold">&#8377;0</div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head">
+        <h2>Update opening balance</h2>
+      </div>
+      <div class="panel-body">
+        <button class="btn btn-primary" style="width:100%;" id="btnUpdateOpening">Set opening balance for a month</button>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head">
+        <h2>Recurring payments</h2>
+        <button class="btn btn-sm" id="btnEditRecurring">Edit list</button>
+      </div>
+      <div class="panel-body">
+        <div class="recur-list" id="recurList"></div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head">
+        <h2>Fixed deposits</h2>
+        <button class="btn btn-sm" id="btnFdAdd">+ Add</button>
+      </div>
+      <div class="panel-body">
+        <div id="fdList"></div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head">
+        <h2>Bank guarantees</h2>
+        <button class="btn btn-sm" id="btnBgAdd">+ Add</button>
+      </div>
+      <div class="panel-body">
+        <div id="bgList"></div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- RIGHT COLUMN -->
+  <div class="right-col">
+
+    <div class="action-bar">
+      <button class="btn btn-primary" data-action="addInvoice">+ Add Pr. Invoice</button>
+      <button class="btn btn-primary" data-action="paymentReceived">Payment received</button>
+      <button class="btn" data-action="generalPayment">+ General payment</button>
+      <button class="btn" data-action="schedulePayment">Schedule payment</button>
+      <button class="btn" data-action="scheduleStandard">Schedule standard payment</button>
+      <button class="btn btn-gold" data-action="addVendor">+ Add vendor</button>
+      <button class="btn" data-action="importOrder">Import order</button>
+    </div>
+
+    <div class="ledger-wrap">
+      <div class="ledger">
+        <div class="ledger-head receipts">
+          <h3>Receipts</h3>
+          <span class="tot" id="receiptsTotal">&#8377;0</span>
+        </div>
+        <div class="ledger-rows" id="receiptsRows"></div>
+      </div>
+      <div class="ledger">
+        <div class="ledger-head payments">
+          <h3>Payments</h3>
+          <span class="tot" id="paymentsTotal">&#8377;0</span>
+        </div>
+        <div class="ledger-rows" id="paymentsRows"></div>
+      </div>
+    </div>
+
+    <div class="strip-wrap">
+      <div class="ledger">
+        <div class="ledger-head" style="background:var(--amber-bg);">
+          <h3>Receivables</h3>
+          <span class="tot" id="receivablesTotal">&#8377;0</span>
+        </div>
+        <table class="simple" id="receivablesTable">
+          <thead><tr><th>Licensee / Item</th><th style="text-align:right;">Amount</th><th></th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <div class="ledger">
+        <div class="ledger-head" style="background:#f1ece0;">
+          <h3>Import orders</h3>
+          <span class="tot" id="importsTotal">&#8377;0</span>
+        </div>
+        <table class="simple" id="importsTable">
+          <thead><tr><th>Order</th><th style="text-align:right;">Amount</th><th></th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+
+  </div>
+
+</div>
+
+<div class="footer-note">LMI Cashflow Manager &middot; synced live across your team's devices &middot; financial year runs April&ndash;March</div>
+
+<!-- ============ MODALS ============ -->
+<div id="modalRoot"></div>
+<div class="toast" id="toast"></div>
+
+</div><!-- /#mainApp -->
+
+<script id="seedData" type="application/json">
+{
+  "months": {
+    "2026-04": {
+      "opening": 3641687.0,
+      "hdfc": 3876515.0,
+      "yesbank": 0,
+      "receipts": [
+        {
+          "name": "Naresh 1 EPP",
+          "amount": 53746.0,
+          "status": "RECD"
+        },
+        {
+          "name": "Naresh 1 EPP",
+          "amount": 53746.0,
+          "status": "RECD"
+        },
+        {
+          "name": "Naresh 1 EPP",
+          "amount": 53746.0,
+          "status": "RECD"
+        },
+        {
+          "name": "Naresh 1 EPP",
+          "amount": 53746.0,
+          "status": "RECD"
+        },
+        {
+          "name": "DR. MAZEN",
+          "amount": 46787.75,
+          "status": "RECD"
+        },
+        {
+          "name": "Ravi 1 EPP",
+          "amount": 58233.0,
+          "status": "RECD"
+        },
+        {
+          "name": "Bhavin Soni lic fees bal",
+          "amount": 508000.0,
+          "status": "RECD"
+        },
+        {
+          "name": "Anil Jhingan",
+          "amount": 650000.0,
+          "status": "RECD"
+        },
+        {
+          "name": "Anand 5 EPP",
+          "amount": 166524.0,
+          "status": "RECD"
+        },
+        {
+          "name": "Toyo",
+          "amount": 1846233.0,
+          "status": "RECD"
+        },
+        {
+          "name": "Sunil Nair Lic fees",
+          "amount": 118000.0,
+          "status": "RECD"
+        },
+        {
+          "name": "Anand 5 EPP",
+          "amount": 100000.0,
+          "status": "RECD"
+        }
+      ],
+      "payments": [
+        {
+          "name": "Salaries for Apr26",
+          "amount": 629828.0,
+          "status": "paid",
+          "recurring": false,
+          "tds": false
+        },
+        {
+          "name": "Reimburesement for Apr26",
+          "amount": 55756.0,
+          "status": "paid",
+          "recurring": false,
+          "tds": false
+        },
+        {
+          "name": "Apeejay for month of Apr26",
+          "amount": 81120.0,
+          "status": "paid",
+          "recurring": false,
+          "tds": false
+        },
+        {
+          "name": "TDS for Mar26",
+          "amount": 226599.0,
+          "status": "paid",
+          "recurring": false,
+          "tds": false
+        },
+        {
+          "name": "VR1 bal for inv 380",
+          "amount": 3584.0,
+          "status": "paid",
+          "recurring": false,
+          "tds": false
+        },
+        {
+          "name": "GST for Mar26",
+          "amount": 550655.0,
+          "status": "paid",
+          "recurring": false,
+          "tds": false
+        },
+        {
+          "name": "MASD for Feb26",
+          "amount": 16989.0,
+          "status": "paid",
+          "recurring": false,
+          "tds": false
+        },
+        {
+          "name": "VR1 for Apr26",
+          "amount": 63444.0,
+          "status": "paid",
+          "recurring": false,
+          "tds": false
+        },
+        {
+          "name": "Stationery for Mar26",
+          "amount": 10821.0,
+          "status": "paid",
+          "recurring": false,
+          "tds": false
+        },
+        {
+          "name": "Professional Courier for Mar26",
+          "amount": 20629.0,
+          "status": "paid",
+          "recurring": false,
+          "tds": false
+        },
+        {
+          "name": "office jio",
+          "amount": 352.82,
+          "status": "paid",
+          "recurring": false,
+          "tds": false
+        },
+        {
+          "name": "add allowance AT",
+          "amount": 20400.0,
+          "status": "paid",
+          "recurring": false,
+          "tds": false
+        },
+        {
+          "name": "add allowance SN",
+          "amount": 20400.0,
+          "status": "paid",
+          "recurring": false,
+          "tds": false
+        },
+        {
+          "name": "AT HDFC CC payment",
+          "amount": 55711.0,
+          "status": "paid",
+          "recurring": false,
+          "tds": false
+        },
+        {
+          "name": "SN HDFC CC payment",
+          "amount": 26454.0,
+          "status": "planned",
+          "recurring": false,
+          "tds": false
+        },
+        {
+          "name": "hathway",
+          "amount": 7000.0,
+          "status": "planned",
+          "recurring": false,
+          "tds": false
+        },
+        {
+          "name": "licensee recruitment adverts",
+          "amount": 15000.0,
+          "status": "planned",
+          "recurring": false,
+          "tds": false
+        },
+        {
+          "name": "FD made",
+          "amount": 300000.0,
+          "status": "paid",
+          "recurring": false,
+          "tds": false
+        },
+        {
+          "name": "Waco marketing fee",
+          "amount": 287777.1,
+          "status": "paid",
+          "recurring": false,
+          "tds": false
+        },
+        {
+          "name": "new order to waco",
+          "amount": 902710.56,
+          "status": "paid",
+          "recurring": false,
+          "tds": false
+        },
+        {
+          "name": "HDFC bank CGST SGST for inward",
+          "amount": 84.22,
+          "status": "paid",
+          "recurring": false,
+          "tds": false
+        },
+        {
+          "name": "TDS held back payments Sandeep",
+          "amount": 0,
+          "status": "planned",
+          "recurring": false,
+          "tds": false
+        },
+        {
+          "name": "AT jio",
+          "amount": 825.0,
+          "status": "paid",
+          "recurring": false,
+          "tds": false
+        },
+        {
+          "name": "AT airtel",
+          "amount": 1179.0,
+          "status": "paid",
+          "recurring": false,
+          "tds": false
+        },
+        {
+          "name": "Salil EIL 2nd batch",
+          "amount": 340854.0,
+          "status": "paid",
+          "recurring": false,
+          "tds": false
+        },
+        {
+          "name": "Naresh Sumantra bill",
+          "amount": 60480.0,
+          "status": "paid",
+          "recurring": false,
+          "tds": false
+        },
+        {
+          "name": "Prospect Lodging system",
+          "amount": 100000.0,
+          "status": "planned",
+          "recurring": false,
+          "tds": false
+        },
+        {
+          "name": "MUFG Linktintime",
+          "amount": 8850.0,
+          "status": "paid",
+          "recurring": false,
+          "tds": false
+        },
+        {
+          "name": "FD made",
+          "amount": 1000000.0,
+          "status": "paid",
+          "recurring": false,
+          "tds": false
+        },
+        {
+          "name": "AT airtel",
+          "amount": 1415.0,
+          "status": "paid",
+          "recurring": false,
+          "tds": false
+        },
+        {
+          "name": "web Dakkar inv 1888",
+          "amount": 3654.0,
+          "status": "paid",
+          "recurring": false,
+          "tds": false
+        },
+        {
+          "name": "web Dakkar inv 1887",
+          "amount": 3666.0,
+          "status": "paid",
+          "recurring": false,
+          "tds": false
+        }
+      ],
+      "receivables": [
+        {
+          "name": "anil 10 epp balance",
+          "amount": 144.0
+        },
+        {
+          "name": "Anupama lic fees -04",
+          "amount": 29500.0
+        }
+      ]
+    },
+    "2026-05": {
+      "opening": 2918693.0,
+      "hdfc": 2918693.0,
+      "yesbank": 0,
+      "receipts": [
+        {
+          "name": "Dipankar Lic fees",
+          "amount": 295000.0,
+          "status": "RECD"
+        },
+        {
+          "name": "Naresh 1 EPP",
+          "amount": 53392.0,
+          "status": "RECD"
+        },
+        {
+          "name": "Harish Lic fees",
+          "amount": 236000.0,
+          "status": "RECD"
+        },
+        {
+          "name": "Prakash Rao refund",
+          "amount": 12000.0,
+          "status": "RECD"
+        },
+        {
+          "name": "Naresh 1 EPP",
+          "amount": 53510.0,
+          "status": "RECD"
+        },
+        {
+          "name": "Bhagyashri refund",
+          "amount": 34020.0,
+          "status": "RECD"
+        },
+        {
+          "name": "Salil refund",
+          "amount": 29150.0,
+          "status": "RECD"
+        },
+        {
+          "name": "LMI China",
+          "amount": 120445.73,
+          "status": "RECD"
+        },
+        {
+          "name": "Payank 10 EPP",
+          "amount": 572884.0,
+          "status": "RECD"
+        },
+        {
+          "name": "Anand 5 EPP",
+          "amount": 266724.0,
+          "status": "RECD"
+        },
+        {
+          "name": "Naresh PI 13",
+          "amount": 4744.0,
+          "status": "RECD"
+        },
+        {
+          "name": "FD interest credit",
+          "amount": 7864.0,
+          "status": "RECD"
+        },
+        {
+          "name": "FD interest credit",
+          "amount": 7864.0,
+          "status": "RECD"
+        },
+        {
+          "name": "FD interest credit",
+          "amount": 7864.0,
+          "status": "RECD"
+        },
+        {
+          "name": "Sudhir",
+          "amount": 500000.0,
+          "status": "RECD"
+        },
+        {
+          "name": "Anand 5 EPP",
+          "amount": 266724.0,
+          "status": "RECD"
+        }
+      ],
+      "payments": [
+        {
+          "name": "Salaries for May26 inlc allowances",
+          "amount": 756726.0,
+          "status": "paid",
+          "recurring": false,
+          "tds": false
+        },
+        {
+          "name": "Reimburesement for May26",
+          "amount": 56265.0,
+          "status": "paid",
+          "recurring": false,
+          "tds": false
+        },
+        {
+          "name": "Apeejay for May26",
+          "amount": 80686.0,
+          "status": "paid",
+          "recurring": false,
+          "tds": false
+        },
+        {
+          "name": "TDS for Apr26",
+          "amount": 247991.0,
+          "status": "paid",
+          "recurring": false,
+          "tds": false
+        },
+        {
+          "name": "GST for Apr26",
+          "amount": 383315.0,
+          "status": "paid",
+          "recurring": false,
+          "tds": false
+        },
+        {
+          "name": "VR1 for May26",
+          "amount": 64376.0,
+          "status": "paid",
+          "recurring": false,
+          "tds": false
+        },
+        {
+          "name": "office jio",
+          "amount": 352.82,
+          "status": "paid",
+          "recurring": false,
+          "tds": false
+        },
+        {
+          "name": "AT HDFC CC payment",
+          "amount": 47759.0,
+          "status": "paid",
+          "recurring": false,
+          "tds": false
+        },
+        {
+          "name": "SN HDFC CC payment",
+          "amount": 34837.0,
+          "status": "paid",
+          "recurring": false,
+          "tds": false
+        },
+        {
+          "name": "hathway yearly",
+          "amount": 11505.0,
+          "status": "paid",
+          "recurring": false,
+          "tds": false
+        },
+        {
+          "name": "Ceva customs",
+          "amount": 86509.0,
+          "status": "paid",
+          "recurring": false,
+          "tds": false
+        },
+        {
+          "name": "Kerry import in May26",
+          "amount": 12010.0,
+          "status": "paid",
+          "recurring": false,
+          "tds": false
+        },
+        {
+          "name": "New import order May 2026",
+          "amount": 975620.69,
+          "status": "paid",
+          "recurring": false,
+          "tds": false
+        },
+        {
+          "name": "NSDL annual custodian fees",
+          "amount": 5900.0,
+          "status": "paid",
+          "recurring": false,
+          "tds": false
+        },
+        {
+          "name": "AT jio",
+          "amount": 825.0,
+          "status": "paid",
+          "recurring": false,
+          "tds": false
+        },
+        {
+          "name": "AT airtel",
+          "amount": 1179.0,
+          "status": "paid",
+          "recurring": false,
+          "tds": false
+        },
+        {
+          "name": "EU membership",
+          "amount": 11800.0,
+          "status": "paid",
+          "recurring": false,
+          "tds": false
+        }
+      ],
+      "receivables": [
+        {
+          "name": "Ameen order",
+          "amount": 0
+        },
+        {
+          "name": "Dilip",
+          "amount": 0
+        },
+        {
+          "name": "Sanjiba lic fees",
+          "amount": 560500.0
+        },
+        {
+          "name": "jhingan 1st pymnt",
+          "amount": 0
+        },
+        {
+          "name": "Sudhir balance",
+          "amount": 0
+        },
+        {
+          "name": "anil 10 epp balance",
+          "amount": 144.0
+        }
+      ]
+    },
+    "2026-06": {
+      "opening": 2494222.0,
+      "hdfc": 2605159.25,
+      "yesbank": 0,
+      "receipts": [
+        {
+          "name": "Sunil Lic fees",
+          "amount": 108000.0,
+          "status": "RECD"
+        },
+        {
+          "name": "Sudhir balance",
+          "amount": 316390.0,
+          "status": "RECD"
+        },
+        {
+          "name": "Sanjiba lic fees",
+          "amount": 280000.0,
+          "status": "RECD"
+        },
+        {
+          "name": "Anand 5 - PI 17",
+          "amount": 261324.0,
+          "status": "RECD"
+        },
+        {
+          "name": "Anand 5 - PI 18",
+          "amount": 261324.0,
+          "status": "RECD"
+        },
+        {
+          "name": "Ameen 20 EPP adv",
+          "amount": 300000.0,
+          "status": "RECD"
+        },
+        {
+          "name": "Sunil Nair ESS",
+          "amount": 38210.0,
+          "status": "RECD"
+        },
+        {
+          "name": "Anil PI-15 1st instalment",
+          "amount": 500000.0,
+          "status": "RECD"
+        },
+        {
+          "name": "GFL",
+          "amount": 155520.0,
+          "status": "RECD"
+        }
+      ],
+      "payments": [
+        {
+          "name": "Salaries for Jun26 incl allowance",
+          "amount": 713677.0,
+          "status": "planned",
+          "recurring": true,
+          "tds": false
+        },
+        {
+          "name": "Reimbursement for JUN26",
+          "amount": 55756.0,
+          "status": "planned",
+          "recurring": true,
+          "tds": false
+        },
+        {
+          "name": "TDS for May26",
+          "amount": 144649.0,
+          "status": "paid",
+          "recurring": false,
+          "tds": false
+        },
+        {
+          "name": "GST for May26",
+          "amount": 255093.0,
+          "status": "paid",
+          "recurring": false,
+          "tds": false
+        },
+        {
+          "name": "Apeejay for June26",
+          "amount": 80686.0,
+          "status": "paid",
+          "recurring": true,
+          "tds": false
+        },
+        {
+          "name": "MASD for May26",
+          "amount": 16989.0,
+          "status": "planned",
+          "recurring": true,
+          "tds": false
+        },
+        {
+          "name": "VR1 for Jun26",
+          "amount": 66436.0,
+          "status": "paid",
+          "recurring": true,
+          "tds": false
+        },
+        {
+          "name": "Stationery for May26",
+          "amount": 4378.0,
+          "status": "planned",
+          "recurring": false,
+          "tds": false
+        },
+        {
+          "name": "Professional Courier for May26",
+          "amount": 18625.0,
+          "status": "planned",
+          "recurring": false,
+          "tds": false
+        },
+        {
+          "name": "office jio",
+          "amount": 352.82,
+          "status": "paid",
+          "recurring": true,
+          "tds": false
+        },
+        {
+          "name": "AT HDFC CC payment",
+          "amount": 13136.0,
+          "status": "paid",
+          "recurring": false,
+          "tds": false
+        },
+        {
+          "name": "SN HDFC CC payment",
+          "amount": 28655.0,
+          "status": "paid",
+          "recurring": false,
+          "tds": false
+        },
+        {
+          "name": "licensee recruitment adverts",
+          "amount": 15000.0,
+          "status": "planned",
+          "recurring": false,
+          "tds": false
+        },
+        {
+          "name": "Ceva customs new order",
+          "amount": 74422.0,
+          "status": "paid",
+          "recurring": false,
+          "tds": false
+        },
+        {
+          "name": "Kerry new order",
+          "amount": 9782.0,
+          "status": "paid",
+          "recurring": false,
+          "tds": false
+        },
+        {
+          "name": "TDS held back payments Sandeep",
+          "amount": 0,
+          "status": "planned",
+          "recurring": false,
+          "tds": false
+        },
+        {
+          "name": "Prospect Lodging system",
+          "amount": 100000.0,
+          "status": "planned",
+          "recurring": false,
+          "tds": false
+        },
+        {
+          "name": "HDFC markup charges",
+          "amount": 45.38,
+          "status": "paid",
+          "recurring": false,
+          "tds": false
+        },
+        {
+          "name": "Madhuri LMI china fac fees",
+          "amount": 48600.0,
+          "status": "paid",
+          "recurring": false,
+          "tds": false
+        },
+        {
+          "name": "MASD for Apr26",
+          "amount": 25089.0,
+          "status": "paid",
+          "recurring": false,
+          "tds": false
+        },
+        {
+          "name": "Stationery for Apr26",
+          "amount": 80308.0,
+          "status": "paid",
+          "recurring": false,
+          "tds": false
+        },
+        {
+          "name": "Professional Courier for Apr26",
+          "amount": 11275.0,
+          "status": "paid",
+          "recurring": false,
+          "tds": false
+        },
+        {
+          "name": "Web Dakkar T2S renewal",
+          "amount": 9106.0,
+          "status": "paid",
+          "recurring": false,
+          "tds": false
+        },
+        {
+          "name": "Isha SFT invoice",
+          "amount": 6480.0,
+          "status": "paid",
+          "recurring": false,
+          "tds": false
+        },
+        {
+          "name": "AT calendly renewal",
+          "amount": 11655.56,
+          "status": "paid",
+          "recurring": false,
+          "tds": false
+        },
+        {
+          "name": "Debasis GFL pay out",
+          "amount": 108000.0,
+          "status": "planned",
+          "recurring": false,
+          "tds": false
+        },
+        {
+          "name": "Salil GFL margin",
+          "amount": 104166.0,
+          "status": "planned",
+          "recurring": false,
+          "tds": false
+        },
+        {
+          "name": "new import - 60EPP + 2 mytyme",
+          "amount": 1082966.66,
+          "status": "paid",
+          "recurring": false,
+          "tds": false
+        },
+        {
+          "name": "Kay - FC 9 participants",
+          "amount": 43200.0,
+          "status": "planned",
+          "recurring": false,
+          "tds": false
+        },
+        {
+          "name": "CEVA customs current order - 60 EPP",
+          "amount": 80000.0,
+          "status": "planned",
+          "recurring": false,
+          "tds": false
+        },
+        {
+          "name": "Kerry 60 EPP current",
+          "amount": 12000.0,
+          "status": "planned",
+          "recurring": false,
+          "tds": false
+        }
+      ],
+      "receivables": [
+        {
+          "name": "Harish Lic fees",
+          "amount": 118000.0
+        },
+        {
+          "name": "Anand 5 - PI 23",
+          "amount": 261324.0
+        },
+        {
+          "name": "Dilip 25 - PI 025",
+          "amount": 1196428.0
+        },
+        {
+          "name": "Aryan 5 - PI 20",
+          "amount": 261324.0
+        },
+        {
+          "name": "Sanjiba lic fees bal",
+          "amount": 280500.0
+        },
+        {
+          "name": "Anupama lic fees -04",
+          "amount": 29500.0
+        },
+        {
+          "name": "anil 10 epp balance",
+          "amount": 144.0
+        },
+        {
+          "name": "Ameen 20 EPP bal",
+          "amount": 917160.0
+        },
+        {
+          "name": "Ameen 1 new EPP",
+          "amount": 32400.0
+        }
+      ]
+    },
+    "2026-07": {
+      "opening": 1494962.0,
+      "hdfc": 0,
+      "yesbank": 0,
+      "receipts": [],
+      "payments": [
+        {
+          "name": "Salaries for JUL26 incl allowance",
+          "amount": 713677.0,
+          "status": "planned",
+          "recurring": false,
+          "tds": false
+        },
+        {
+          "name": "Reimbursement for jUL26",
+          "amount": 55756.0,
+          "status": "planned",
+          "recurring": false,
+          "tds": false
+        },
+        {
+          "name": "TDS for JUN26",
+          "amount": 150000.0,
+          "status": "planned",
+          "recurring": false,
+          "tds": false
+        },
+        {
+          "name": "GST for JUN26",
+          "amount": 195787,
+          "status": "planned",
+          "recurring": false,
+          "tds": false
+        },
+        {
+          "name": "Apeejay for JUL26",
+          "amount": 80686.0,
+          "status": "paid",
+          "recurring": false,
+          "tds": false
+        },
+        {
+          "name": "MASD for Jun26",
+          "amount": 0,
+          "status": "planned",
+          "recurring": false,
+          "tds": false
+        },
+        {
+          "name": "VR1 for JUL26",
+          "amount": 66436.0,
+          "status": "paid",
+          "recurring": false,
+          "tds": false
+        },
+        {
+          "name": "Stationery for JUN26",
+          "amount": 4378.0,
+          "status": "planned",
+          "recurring": false,
+          "tds": false
+        },
+        {
+          "name": "Professional Courier for JUN26",
+          "amount": 0,
+          "status": "planned",
+          "recurring": false,
+          "tds": false
+        },
+        {
+          "name": "office jio",
+          "amount": 352.82,
+          "status": "planned",
+          "recurring": false,
+          "tds": false
+        },
+        {
+          "name": "AT HDFC CC payment",
+          "amount": 13136.0,
+          "status": "paid",
+          "recurring": false,
+          "tds": false
+        },
+        {
+          "name": "SN HDFC CC payment",
+          "amount": 28655.0,
+          "status": "paid",
+          "recurring": false,
+          "tds": false
+        },
+        {
+          "name": "licensee recruitment adverts",
+          "amount": 15000.0,
+          "status": "planned",
+          "recurring": false,
+          "tds": false
+        },
+        {
+          "name": "LMI marketing fees JUL-AUG-SEP",
+          "amount": 290000.0,
+          "status": "planned",
+          "recurring": false,
+          "tds": false
+        },
+        {
+          "name": "newspaper advert for lic recrt",
+          "amount": 25000.0,
+          "status": "planned",
+          "recurring": false,
+          "tds": false
+        },
+        {
+          "name": "TDS held back payments Sandeep",
+          "amount": 0,
+          "status": "planned",
+          "recurring": false,
+          "tds": false
+        },
+        {
+          "name": "Prospect Lodging system",
+          "amount": 200000.0,
+          "status": "planned",
+          "recurring": false,
+          "tds": false
+        },
+        {
+          "name": "advance to Hotel for CDC",
+          "amount": 0,
+          "status": "planned",
+          "recurring": false,
+          "tds": false
+        },
+        {
+          "name": "AT calendly renewal",
+          "amount": 11655.56,
+          "status": "paid",
+          "recurring": false,
+          "tds": false
+        }
+      ],
+      "receivables": [
+        {
+          "name": "Anil PI 15 - 50 EPP adv",
+          "amount": 2177420.0
+        },
+        {
+          "name": "Harish Lic fees",
+          "amount": 118000.0
+        },
+        {
+          "name": "anand 10",
+          "amount": 0
+        },
+        {
+          "name": "Sunil Lic fees",
+          "amount": 108000.0
+        },
+        {
+          "name": "anil 10 epp balance",
+          "amount": 144.0
+        },
+        {
+          "name": "Anupama lic fees -04",
+          "amount": 29500.0
+        }
+      ]
+    }
+  },
+  "fixedDeposits": [
+    {
+      "type": "sweepin FD",
+      "amount": 500000.0,
+      "term": ""
+    },
+    {
+      "type": "sweepin FD",
+      "amount": 271550.0,
+      "term": ""
+    },
+    {
+      "type": "sweepin FD",
+      "amount": 230000.0,
+      "term": ""
+    },
+    {
+      "type": "new sweepin",
+      "amount": 300000.0,
+      "term": ""
+    },
+    {
+      "type": "new sweepin",
+      "amount": 500000.0,
+      "term": ""
+    },
+    {
+      "type": "new sweepin",
+      "amount": 1000000.0,
+      "term": ""
+    }
+  ],
+  "bankGuarantees": [
+    {
+      "name": "FD bank guarantee",
+      "amount": 72000.0
+    },
+    {
+      "name": "FD bank guarantee",
+      "amount": 400000.0
+    }
+  ]
+}
+</script>
+
+<!-- ============================================================
+     Supabase configuration.
+     Fill in your Project URL and anon public key below
+     (Supabase Dashboard → Project Settings → API).
+     Leave both as empty strings to run in local-only mode
+     (same as before — single device, no login, no sync).
+     ============================================================ -->
+<script>
+  window.__SUPABASE_URL__ = 'https://jccwraxukhuwusevsfhn.supabase.co';
+  window.__SUPABASE_ANON_KEY__ = 'sb_publishable_6sItNz511-fMTitJFyPPQw_5DHK22vn';
+</script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="sync.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

@@ -1,5 +1,10 @@
 /* ===========================================================
    LMI Cashflow Manager — application logic
+   VERSION 2 — includes: FD/BG/Receivables edit+delete, payment
+   status click-toggle, Schedule-to-month, opening balance fix,
+   recurring-forward-only (no backfill of past months), part-
+   payment <-> receivable reconciliation, self-healing month
+   provisioning (fixes Aug/Sep missing recurring payments).
    Single-file, localStorage-backed cashflow tracker.
    =========================================================== */
 
@@ -236,14 +241,29 @@ function renderFYSelect() {
 }
 
 // Switches the active month, creating it and applying standing provisions (TDS estimate,
-// quarterly Waco fee, recurring rollups) if it didn't already exist. Returns touched month keys.
+// quarterly Waco fee, recurring payments) if it's new OR if it already exists but is missing
+// them (e.g. months created before this auto-provisioning existed). Returns touched month keys.
+function monthIsMissingProvisions(mk) {
+  const m = DB.months[mk];
+  if (!m) return false; // doesn't exist yet — handled by the isNew branch instead
+  const hasAnyRecurringTemplate = DB.recurringTemplate && DB.recurringTemplate.length > 0;
+  const hasRecurringPayments = m.payments.some(p => p.recurring);
+  const hasTdsLine = m.payments.some(p => /^TDS provisional/i.test(p.name));
+  if (hasAnyRecurringTemplate && !hasRecurringPayments) return true;
+  if (!hasTdsLine) return true;
+  return false;
+}
+
 function selectMonth(mk) {
   const isNew = !DB.months[mk];
+  const needsHealing = !isNew && monthIsMissingProvisions(mk);
   DB.selectedMonth = mk;
   ensureMonthExists(mk);
   const touched = [mk];
-  if (isNew) {
+  if (isNew || needsHealing) {
     ensureMonthlyProvisions(mk);
+  }
+  if (isNew) {
     const prevMk = prevMonthKey(mk);
     recalcTDSRollup(prevMk);
     if (DB.months[prevMk]) touched.push(prevMk);

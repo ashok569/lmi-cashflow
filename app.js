@@ -314,7 +314,9 @@ function renderFDList() {
     <div class="recur-item">
       <span class="nm">${escapeHtml(f.type)}${f.term ? ' &middot; ' + escapeHtml(f.term) : ''}</span>
       <span class="amt">${fmtMoney(f.amount)}</span>
+      <button data-edit-fd="${f.id}" title="Edit">&#9998;</button>
     </div>`).join('') + `<div class="recur-item" style="border-top:1px solid var(--line); margin-top:4px; padding-top:9px;"><span class="nm" style="font-weight:700;">Total</span><span class="amt" style="font-weight:700;">${fmtMoney(total)}</span></div>`;
+  wrap.querySelectorAll('[data-edit-fd]').forEach(b => b.onclick = () => openEditFd(b.dataset.editFd));
 }
 
 function renderBGList() {
@@ -325,7 +327,9 @@ function renderBGList() {
     <div class="recur-item">
       <span class="nm">${escapeHtml(b.name)}</span>
       <span class="amt">${fmtMoney(b.amount)}</span>
+      <button data-edit-bg="${b.id}" title="Edit">&#9998;</button>
     </div>`).join('');
+  wrap.querySelectorAll('[data-edit-bg]').forEach(b => b.onclick = () => openEditBg(b.dataset.editBg));
 }
 
 function statusBadge(status) {
@@ -366,7 +370,7 @@ function renderLedgers() {
       <div class="lrow">
         <span class="nm">${p.recurring ? '<span class="star">&#9733;</span>' : ''}${escapeHtml(p.name)}${p.tds ? ' <span style="color:var(--ink-soft); font-size:10.5px;">(TDS)</span>' : ''}</span>
         <span class="amt">${p.amount ? fmtMoney(p.amount) : '<span style="color:var(--ink-soft);">pending</span>'}</span>
-        ${statusBadge(p.status)}
+        <span data-toggle-status="${p.id}" style="cursor:pointer;" title="Click to change status">${statusBadge(p.status)}</span>
         <span class="row-actions">
           <button data-edit-payment="${p.id}" title="Edit">&#9998;</button>
           <button data-del-payment="${p.id}" title="Delete">&#10005;</button>
@@ -379,6 +383,18 @@ function renderLedgers() {
   receiptsRows.querySelectorAll('[data-del-receipt]').forEach(b => b.onclick = () => deleteReceipt(b.dataset.delReceipt));
   paymentsRows.querySelectorAll('[data-edit-payment]').forEach(b => b.onclick = () => openEditPayment(b.dataset.editPayment));
   paymentsRows.querySelectorAll('[data-del-payment]').forEach(b => b.onclick = () => deletePayment(b.dataset.delPayment));
+  paymentsRows.querySelectorAll('[data-toggle-status]').forEach(el => el.onclick = () => togglePaymentStatus(el.dataset.toggleStatus));
+}
+
+// Click-to-cycle: planned -> paid -> on hold -> planned (item 4)
+function togglePaymentStatus(id) {
+  const m = getMonth(DB.selectedMonth);
+  const p = m.payments.find(p => p.id === id);
+  if (!p) return;
+  const order = ['planned', 'paid', 'on hold'];
+  const idx = order.indexOf((p.status || 'planned').toLowerCase());
+  p.status = order[(idx + 1) % order.length];
+  saveDB(); renderAll();
 }
 
 function renderReceivables() {
@@ -397,10 +413,12 @@ function renderReceivables() {
       <td class="amt">${fmtMoney(r.amount)}</td>
       <td class="row-actions">
         <button data-receive="${r.id}" title="Record payment received">&#10003;</button>
+        <button data-edit-receivable="${r.id}" title="Edit">&#9998;</button>
         <button data-del-receivable="${r.id}" title="Delete">&#10005;</button>
       </td>
     </tr>`).join('');
   tbody.querySelectorAll('[data-receive]').forEach(b => b.onclick = () => openPaymentReceivedFor(b.dataset.receive));
+  tbody.querySelectorAll('[data-edit-receivable]').forEach(b => b.onclick = () => openEditReceivable(b.dataset.editReceivable));
   tbody.querySelectorAll('[data-del-receivable]').forEach(b => b.onclick = () => deleteReceivable(b.dataset.delReceivable));
 }
 
@@ -469,21 +487,35 @@ function closeModal() {
 /* ===========================================================
    ACTION: Update Opening Balance
    =========================================================== */
+function openingHintText(mk) {
+  const isManual = DB.months[mk] && DB.months[mk].openingManual;
+  const basis = isManual ? 'a manually set amount' : "auto-calculated from the previous month's closing balance";
+  return `The current figure shown is ${basis}. Enter a new amount and save to replace it — this becomes the new opening balance for that month, and later months keep auto-calculating forward from whatever you set here.`;
+}
+
 function openUpdateOpening() {
   const months = monthsOfFY(DB.currentFY);
+  const defaultMk = months.includes(DB.selectedMonth) ? DB.selectedMonth : months[0];
   const body = `
     <div class="field">
       <label>Month</label>
-      <select id="ob-month">${months.map(mk => `<option value="${mk}" ${mk===DB.selectedMonth?'selected':''}>${monthLabel(mk)}</option>`).join('')}</select>
+      <select id="ob-month">${months.map(mk => `<option value="${mk}" ${mk===defaultMk?'selected':''}>${monthLabel(mk)}</option>`).join('')}</select>
     </div>
     <div class="field">
       <label>Opening balance amount</label>
-      <input type="number" id="ob-amount" placeholder="e.g. 2500000" value="${getOpening(months.includes(DB.selectedMonth)?DB.selectedMonth:months[0])||''}">
+      <input type="number" id="ob-amount" placeholder="e.g. 2500000" value="${getOpening(defaultMk)||''}">
     </div>
-    <div class="hint">This sets B3 for the chosen month. Following months keep auto-calculating from each prior month's closing cash unless you set their opening balance manually too.</div>`;
+    <div class="hint" id="ob-hint">${escapeHtml(openingHintText(defaultMk))}</div>`;
   const foot = `<button class="btn" id="ob-cancel">Cancel</button><button class="btn btn-primary" id="ob-save">Save</button>`;
   openModal('Update opening balance', body, foot);
   document.getElementById('ob-cancel').onclick = closeModal;
+
+  document.getElementById('ob-month').addEventListener('change', e => {
+    const mk = e.target.value;
+    document.getElementById('ob-amount').value = getOpening(mk) || '';
+    document.getElementById('ob-hint').textContent = openingHintText(mk);
+  });
+
   document.getElementById('ob-save').onclick = () => {
     const mk = document.getElementById('ob-month').value;
     const amt = parseFloat(document.getElementById('ob-amount').value) || 0;
@@ -491,7 +523,7 @@ function openUpdateOpening() {
     DB.months[mk].opening = amt;
     DB.months[mk].openingManual = true;
     saveDB([mk]); renderAll(); closeModal();
-    toast(`Opening balance for ${monthLabel(mk)} set to ${fmtMoney(amt)}`);
+    toast(`Opening balance for ${monthLabel(mk)} replaced with ${fmtMoney(amt)}`);
   };
 }
 
@@ -614,7 +646,7 @@ function openPaymentReceivedFor(receivableId) {
     } else {
       const amt = parseFloat(document.getElementById('pr-amount').value) || 0;
       if (amt <= 0) { toast('Enter the amount received'); return; }
-      m.receipts.push({ id: uid(), name: rec.name, amount: amt, status: 'RECD' });
+      m.receipts.push({ id: uid(), name: rec.name, amount: amt, status: 'RECD', _receivableId: rec.id, _receivableMonth: DB.selectedMonth });
       rec.amount = Math.max(0, rec.amount - amt);
       if (rec.amount === 0) m.receivables = m.receivables.filter(r => r.id !== rec.id);
       toast(`Recorded part payment of ${fmtMoney(amt)} from ${rec.name}`);
@@ -655,7 +687,7 @@ function renderRecurringEditor() {
           <button data-rec-del="${i}" style="border:none;background:none;color:#aab2bd;cursor:pointer;margin-left:6px;">&#10005;</button>
         </div>`).join('') : '<div class="empty-note" style="padding:12px;">No recurring items yet.</div>'}
     </div>
-    <div class="hint">Changing an amount here updates it from the current month (${monthLabel(DB.selectedMonth)}) onward. Past months are not affected.</div>
+    <div class="hint">Saving applies these amounts to ${monthLabel(DB.selectedMonth)} and every month after it this financial year. Earlier months are never changed.</div>
     <button class="btn btn-sm" id="rec-add-new">+ Add recurring item</button>`;
   openModal('Edit recurring payments', body, `<button class="btn" id="rec-cancel">Cancel</button><button class="btn btn-primary" id="rec-save">Save changes</button>`);
   document.getElementById('rec-cancel').onclick = closeModal;
@@ -677,13 +709,21 @@ function renderRecurringEditor() {
       DB.recurringTemplate[idx].amount = parseFloat(inp.value) || 0;
     });
     const touched = applyRecurringForward(DB.selectedMonth);
+    // Also ensure TDS provisional / quarterly Waco fee are present in those same upcoming months.
+    touched.forEach(mk => ensureMonthlyProvisions(mk));
     saveDB(touched); renderAll(); closeModal();
-    toast('Recurring payments updated from ' + monthLabel(DB.selectedMonth) + ' onward');
+    toast(`Recurring payments updated from ${monthLabel(DB.selectedMonth)} onward`);
   };
 }
 
 // Pushes current recurringTemplate amounts into the selected month and all later months in the same FY
 // that don't already have a manually-edited value for that item this cycle. Returns the touched month keys.
+// Pushes current recurringTemplate amounts into every month of the current financial year
+// (not just from fromMk onward) — this both updates future months going forward and backfills
+// any already-created month that's missing recurring items (e.g. from before this was automatic).
+// Returns the touched month keys.
+// Pushes current recurringTemplate amounts into the selected month and all later months in the
+// same FY — never touches months before fromMk. Returns the touched month keys.
 function applyRecurringForward(fromMk) {
   const months = monthsOfFY(fyLabelForMonth(fromMk)).filter(mk => mk >= fromMk);
   months.forEach(mk => {
@@ -917,6 +957,34 @@ function openFdAdd() {
     toast(`Fixed deposit added: ${type}`);
   };
 }
+function openEditFd(fdId) {
+  const fd = (DB.fixedDeposits || []).find(f => f.id === fdId);
+  if (!fd) return;
+  const body = `
+    <div class="field"><label>Type</label><input type="text" id="fd-type" value="${escapeHtml(fd.type)}"></div>
+    <div class="field-row">
+      <div class="field"><label>Amount</label><input type="number" id="fd-amount" value="${fd.amount}"></div>
+      <div class="field"><label>Term</label><input type="text" id="fd-term" value="${escapeHtml(fd.term || '')}"></div>
+    </div>
+    <div class="hint">This is a standing balance — changes apply everywhere, not just one month. If this FD has matured or closed, use Delete.</div>`;
+  openModal('Edit fixed deposit', body, `<button class="btn btn-danger" id="fd-delete">Delete</button><button class="btn" id="fd-cancel">Cancel</button><button class="btn btn-primary" id="fd-save">Save</button>`);
+  document.getElementById('fd-cancel').onclick = closeModal;
+  document.getElementById('fd-delete').onclick = () => {
+    if (!confirm(`Delete "${fd.type}"? This removes it everywhere.`)) return;
+    DB.fixedDeposits = DB.fixedDeposits.filter(f => f.id !== fdId);
+    saveDB(); renderAll(); closeModal();
+    toast(`Fixed deposit removed: ${fd.type}`);
+  };
+  document.getElementById('fd-save').onclick = () => {
+    const type = document.getElementById('fd-type').value.trim();
+    const amount = parseFloat(document.getElementById('fd-amount').value) || 0;
+    const term = document.getElementById('fd-term').value.trim();
+    if (!type) { toast('Type is required'); return; }
+    fd.type = type; fd.amount = amount; fd.term = term;
+    saveDB(); renderAll(); closeModal();
+    toast(`Fixed deposit updated: ${type}`);
+  };
+}
 function openBgAdd() {
   const body = `
     <div class="field"><label>Name</label><input type="text" id="bg-name" placeholder="e.g. FD bank guarantee"></div>
@@ -932,6 +1000,30 @@ function openBgAdd() {
     toast(`Bank guarantee added: ${name}`);
   };
 }
+function openEditBg(bgId) {
+  const bg = (DB.bankGuarantees || []).find(b => b.id === bgId);
+  if (!bg) return;
+  const body = `
+    <div class="field"><label>Name</label><input type="text" id="bg-name" value="${escapeHtml(bg.name)}"></div>
+    <div class="field"><label>Amount</label><input type="number" id="bg-amount" value="${bg.amount}"></div>
+    <div class="hint">This is a standing balance — changes apply everywhere, not just one month. If this guarantee has been released, use Delete.</div>`;
+  openModal('Edit bank guarantee', body, `<button class="btn btn-danger" id="bg-delete">Delete</button><button class="btn" id="bg-cancel">Cancel</button><button class="btn btn-primary" id="bg-save">Save</button>`);
+  document.getElementById('bg-cancel').onclick = closeModal;
+  document.getElementById('bg-delete').onclick = () => {
+    if (!confirm(`Delete "${bg.name}"? This removes it everywhere.`)) return;
+    DB.bankGuarantees = DB.bankGuarantees.filter(b => b.id !== bgId);
+    saveDB(); renderAll(); closeModal();
+    toast(`Bank guarantee removed: ${bg.name}`);
+  };
+  document.getElementById('bg-save').onclick = () => {
+    const name = document.getElementById('bg-name').value.trim();
+    const amount = parseFloat(document.getElementById('bg-amount').value) || 0;
+    if (!name) { toast('Name is required'); return; }
+    bg.name = name; bg.amount = amount;
+    saveDB(); renderAll(); closeModal();
+    toast(`Bank guarantee updated: ${name}`);
+  };
+}
 
 /* ===========================================================
    EDIT / DELETE row-level handlers
@@ -940,6 +1032,7 @@ function openEditReceipt(id) {
   const m = getMonth(DB.selectedMonth);
   const r = m.receipts.find(r => r.id === id);
   if (!r) return;
+  const isLinkedPart = !!r._receivableId;
   const body = `
     <div class="field"><label>Name</label><input type="text" id="er-name" value="${escapeHtml(r.name)}"></div>
     <div class="field"><label>Amount</label><input type="number" id="er-amount" value="${r.amount}"></div>
@@ -948,19 +1041,52 @@ function openEditReceipt(id) {
         <option value="RECD" ${r.status==='RECD'?'selected':''}>RECD</option>
         <option value="expected" ${r.status==='expected'?'selected':''}>Expected</option>
       </select>
-    </div>`;
+    </div>
+    ${isLinkedPart ? '<div class="hint">This was a part payment against a receivable. Changing the amount here will adjust that receivable\'s outstanding balance to match.</div>' : ''}`;
   openModal('Edit receipt', body, `<button class="btn" id="er-cancel">Cancel</button><button class="btn btn-primary" id="er-save">Save</button>`);
   document.getElementById('er-cancel').onclick = closeModal;
   document.getElementById('er-save').onclick = () => {
+    const oldAmount = Number(r.amount) || 0;
+    const newAmount = parseFloat(document.getElementById('er-amount').value) || 0;
     r.name = document.getElementById('er-name').value.trim();
-    r.amount = parseFloat(document.getElementById('er-amount').value) || 0;
+    r.amount = newAmount;
     r.status = document.getElementById('er-status').value;
+
+    if (isLinkedPart) {
+      const delta = newAmount - oldAmount; // positive = more received than before
+      const recMonth = getMonth(r._receivableMonth || DB.selectedMonth);
+      let rec = recMonth.receivables.find(rv => rv.id === r._receivableId);
+      if (!rec && delta < 0) {
+        // Receivable was already fully closed out, but we're now reducing what was actually
+        // received — the shortfall is owed again, so recreate it.
+        rec = { id: r._receivableId, name: r.name, amount: 0 };
+        recMonth.receivables.push(rec);
+      }
+      if (rec) {
+        rec.amount = Math.max(0, (Number(rec.amount) || 0) - delta);
+        if (rec.amount === 0) {
+          recMonth.receivables = recMonth.receivables.filter(rv => rv.id !== rec.id);
+        }
+      }
+    }
+
     saveDB(); renderAll(); closeModal();
   };
 }
 function deleteReceipt(id) {
   if (!confirm('Delete this receipt?')) return;
   const m = getMonth(DB.selectedMonth);
+  const r = m.receipts.find(r => r.id === id);
+  if (r && r._receivableId) {
+    const recMonth = getMonth(r._receivableMonth || DB.selectedMonth);
+    let rec = recMonth.receivables.find(rv => rv.id === r._receivableId);
+    if (!rec) {
+      rec = { id: r._receivableId, name: r.name, amount: 0 };
+      recMonth.receivables.push(rec);
+    }
+    rec.amount = (Number(rec.amount) || 0) + (Number(r.amount) || 0);
+    toast(`Receipt deleted — ${fmtMoney(r.amount)} restored to receivables`);
+  }
   m.receipts = m.receipts.filter(r => r.id !== id);
   saveDB(); renderAll();
 }
@@ -969,6 +1095,7 @@ function openEditPayment(id) {
   const m = getMonth(DB.selectedMonth);
   const p = m.payments.find(p => p.id === id);
   if (!p) return;
+  const months = monthsOfFY(DB.currentFY).filter(mk => mk !== DB.selectedMonth);
   const body = `
     <div class="field"><label>Name</label><input type="text" id="ep-name" value="${escapeHtml(p.name)}"></div>
     <div class="field"><label>Amount</label><input type="number" id="ep-amount" value="${p.amount}"></div>
@@ -977,16 +1104,44 @@ function openEditPayment(id) {
         <option value="planned" ${p.status==='planned'?'selected':''}>Planned</option>
         <option value="paid" ${p.status==='paid'?'selected':''}>Paid</option>
         <option value="on hold" ${p.status==='on hold'?'selected':''}>On hold</option>
+        <option value="schedule">Schedule for another month&hellip;</option>
       </select>
     </div>
+    <div class="field" id="ep-schedule-field" style="display:none;">
+      <label>Move to month</label>
+      <select id="ep-schedule-month">${months.map(mk => `<option value="${mk}">${monthLabel(mk)}</option>`).join('')}</select>
+    </div>
     <div class="checkrow"><input type="checkbox" id="ep-tds" ${p.tds?'checked':''}><label for="ep-tds">TDS applicable</label></div>
-    <div class="hint">${p.recurring ? 'This is a recurring item. To change it for all future months, use Edit recurring instead. Saving here changes only ' + monthLabel(DB.selectedMonth) + '.' : 'Edits here apply only to ' + monthLabel(DB.selectedMonth) + '.'}</div>`;
+    <div class="hint" id="ep-hint">${p.recurring ? 'This is a recurring item. To change it for all future months, use Edit recurring instead. Saving here changes only ' + monthLabel(DB.selectedMonth) + '.' : 'Edits here apply only to ' + monthLabel(DB.selectedMonth) + '.'}</div>`;
   openModal('Edit payment', body, `<button class="btn" id="ep-cancel">Cancel</button><button class="btn btn-primary" id="ep-save">Save</button>`);
   document.getElementById('ep-cancel').onclick = closeModal;
+
+  const statusSel = document.getElementById('ep-status');
+  const scheduleField = document.getElementById('ep-schedule-field');
+  const hintEl = document.getElementById('ep-hint');
+  statusSel.addEventListener('change', () => {
+    const isSchedule = statusSel.value === 'schedule';
+    scheduleField.style.display = isSchedule ? 'block' : 'none';
+    if (isSchedule) hintEl.textContent = 'This will remove the payment from ' + monthLabel(DB.selectedMonth) + ' and add it to the month you pick below.';
+  });
+
   document.getElementById('ep-save').onclick = () => {
+    const newStatus = statusSel.value;
+    if (newStatus === 'schedule') {
+      const targetMk = document.getElementById('ep-schedule-month').value;
+      const name = document.getElementById('ep-name').value.trim();
+      const amount = parseFloat(document.getElementById('ep-amount').value) || 0;
+      const tds = document.getElementById('ep-tds').checked;
+      m.payments = m.payments.filter(x => x.id !== id);
+      const target = ensureMonthExists(targetMk);
+      target.payments.push({ id: uid(), name, amount, status: 'planned', recurring: p.recurring, tds });
+      saveDB([targetMk]); renderAll(); closeModal();
+      toast(`Moved "${name}" to ${monthLabel(targetMk)}`);
+      return;
+    }
     p.name = document.getElementById('ep-name').value.trim();
     p.amount = parseFloat(document.getElementById('ep-amount').value) || 0;
-    p.status = document.getElementById('ep-status').value;
+    p.status = newStatus;
     p.tds = document.getElementById('ep-tds').checked;
     saveDB(); renderAll(); closeModal();
   };
@@ -996,6 +1151,30 @@ function deletePayment(id) {
   const m = getMonth(DB.selectedMonth);
   m.payments = m.payments.filter(p => p.id !== id);
   saveDB(); renderAll();
+}
+function openEditReceivable(id) {
+  const m = getMonth(DB.selectedMonth);
+  const r = m.receivables.find(r => r.id === id);
+  if (!r) return;
+  const body = `
+    <div class="field"><label>Licensee / Item</label><input type="text" id="erv-name" value="${escapeHtml(r.name)}"></div>
+    <div class="field"><label>Amount</label><input type="number" id="erv-amount" value="${r.amount}"></div>`;
+  openModal('Edit receivable', body, `<button class="btn btn-danger" id="erv-delete">Delete</button><button class="btn" id="erv-cancel">Cancel</button><button class="btn btn-primary" id="erv-save">Save</button>`);
+  document.getElementById('erv-cancel').onclick = closeModal;
+  document.getElementById('erv-delete').onclick = () => {
+    if (!confirm(`Delete "${r.name}"?`)) return;
+    m.receivables = m.receivables.filter(x => x.id !== id);
+    saveDB(); renderAll(); closeModal();
+    toast(`Receivable removed: ${r.name}`);
+  };
+  document.getElementById('erv-save').onclick = () => {
+    const name = document.getElementById('erv-name').value.trim();
+    const amount = parseFloat(document.getElementById('erv-amount').value) || 0;
+    if (!name) { toast('Name is required'); return; }
+    r.name = name; r.amount = amount;
+    saveDB(); renderAll(); closeModal();
+    toast(`Receivable updated: ${name}`);
+  };
 }
 function deleteReceivable(id) {
   if (!confirm('Delete this receivable?')) return;
@@ -1014,19 +1193,22 @@ function deleteReceivable(id) {
 function ensureMonthlyProvisions(mk) {
   const m = ensureMonthExists(mk);
 
+  // Recurring (starred) payments — Salaries, Reimbursement, etc. — were previously only
+  // populated via the "Edit recurring" save action, so any month nobody had opened that
+  // editor for after stayed empty. Apply the standing recurring template here too, so every
+  // month gets these automatically the first time it's created.
+  DB.recurringTemplate.forEach(tpl => {
+    const existing = m.payments.find(p => p.recurring && p.name.toLowerCase().startsWith(tpl.name.toLowerCase()));
+    if (!existing) {
+      m.payments.push({ id: uid(), name: `${tpl.name} for ${monthLabel(mk)}`, amount: tpl.amount, status: 'planned', recurring: true, tds: !!tpl.tds });
+    }
+  });
+
   // TDS provisional line (auto-added if not present)
   let tdsLine = m.payments.find(p => /^TDS provisional/i.test(p.name));
   if (!tdsLine) {
     tdsLine = { id: uid(), name: 'TDS provisional', amount: TDS_ESTIMATE, status: 'planned', recurring: false, tds: false, _auto: true };
     m.payments.push(tdsLine);
-  }
-
-  // Roll up TDS-flagged payments from the PREVIOUS month into this month's TDS provisional
-  const prevMk = prevMonthKey(mk);
-  const prevM = DB.months[prevMk];
-  if (prevM) {
-    const tdsFromPrev = prevM.payments.filter(p => p.tds && !p._tdsRolled).reduce((s, p) => s + (Number(p.amount) || 0) * 0, 0);
-    // mark as rolled to avoid double counting on repeated calls — actual incremental add handled in recalcTDSRollup()
   }
 
   // Quarterly Waco marketing fee

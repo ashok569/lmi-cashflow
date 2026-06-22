@@ -658,15 +658,16 @@ function openAddInvoice() {
    =========================================================== */
 function openPaymentReceived() {
   const m = getMonth(DB.selectedMonth);
-  if (!m.receivables.length) {
-    openModal('Payment received', '<div class="empty-note">No receivables on file for this month. Add a Pr. Invoice first.</div>', `<button class="btn btn-primary" id="pr-ok">Close</button>`);
+  const payable = m.receivables.filter(r => !r._carriedFrom);
+  if (!payable.length) {
+    openModal('Payment received', '<div class="empty-note">No receivables on file for this month. Add a Pr. Invoice first, or record the payment in the month where the receivable was originally entered.</div>', `<button class="btn btn-primary" id="pr-ok">Close</button>`);
     document.getElementById('pr-ok').onclick = closeModal;
     return;
   }
   const body = `
     <div class="field"><label>Select receivable</label></div>
     <div class="sub-list" id="pr-list">
-      ${m.receivables.map(r => `<div class="sub-list-item" data-id="${r.id}"><span>${escapeHtml(r.name)}</span><span class="amt">${fmtMoney(r.amount)}</span></div>`).join('')}
+      ${payable.map(r => `<div class="sub-list-item" data-id="${r.id}"><span>${escapeHtml(r.name)}</span><span class="amt">${fmtMoney(r.amount)}</span></div>`).join('')}
     </div>`;
   openModal('Payment received', body, `<button class="btn" id="pr-cancel">Cancel</button>`);
   document.getElementById('pr-cancel').onclick = closeModal;

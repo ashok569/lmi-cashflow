@@ -1,10 +1,12 @@
 /* ===========================================================
    LMI Cashflow Manager — application logic
+   VERSION 2.1 — adds: Ad Hoc Receivables button (no PI/GST),
+   carry-forward exclusion from future-month totals, full-
+   payment receipt deletion restores receivable.
    VERSION 2 — includes: FD/BG/Receivables edit+delete, payment
    status click-toggle, Schedule-to-month, opening balance fix,
-   recurring-forward-only (no backfill of past months), part-
-   payment <-> receivable reconciliation, self-healing month
-   provisioning (fixes Aug/Sep missing recurring payments).
+   recurring-forward-only, part-payment <-> receivable
+   reconciliation, self-healing month provisioning.
    Single-file, localStorage-backed cashflow tracker.
    =========================================================== */
 
@@ -164,7 +166,12 @@ function monthTotals(mk) {
   const receiptsTotal = m.receipts.reduce((s, r) => s + (Number(r.amount) || 0), 0);
   const paymentsTotal = m.payments.reduce((s, p) => s + (Number(p.amount) || 0), 0);
   const paymentsOnHold = m.payments.filter(p => p.status === 'on hold').reduce((s, p) => s + (Number(p.amount) || 0), 0);
-  const receivablesTotal = m.receivables.reduce((s, r) => s + (Number(r.amount) || 0), 0);
+  // Carried receivables only count toward the total once the month becomes the current month.
+  // While it's still a future month they are shown for visibility but excluded from the total.
+  const isFutureMonth = mk > todayMonthKey();
+  const receivablesTotal = m.receivables
+    .filter(r => !isFutureMonth || !r._carriedFrom)
+    .reduce((s, r) => s + (Number(r.amount) || 0), 0);
   return { receiptsTotal, paymentsTotal, paymentsOnHold, receivablesTotal };
 }
 
@@ -185,11 +192,44 @@ function computeClosing(mk) {
 }
 
 function anticipatedStatus(mk) {
-  // opening + receipts(RECD) - payments(paid+planned), roughly mirroring the K1 formula intent:
-  // sum(opening+receivables) minus payments on hold list (kept simple/clear here)
   const { paymentsOnHold } = monthTotals(mk);
   const closing = computeClosing(mk);
   return closing - paymentsOnHold;
+}
+
+/* ===========================================================
+   RECEIVABLES CARRY-FORWARD
+   Source: always today's calendar month.
+   Target: always the following calendar month.
+   Receivables with balance > 0 in today's month are mirrored
+   in next month as _carriedFrom entries. Next month's own
+   independently-added receivables are never touched.
+   Call syncCarriedReceivables() after any change to today's
+   month's receivables list.
+   =========================================================== */
+function syncCarriedReceivables() {
+  const todayMk = todayMonthKey();
+  const nextMk = nextMonthKey(todayMk);
+  const todayMonth = DB.months[todayMk];
+  if (!todayMonth) return; // today's month doesn't exist yet, nothing to carry
+
+  const nextMonth = ensureMonthExists(nextMk);
+
+  // Remove all existing carried entries from next month (they'll be rebuilt from scratch)
+  nextMonth.receivables = nextMonth.receivables.filter(r => !r._carriedFrom);
+
+  // Re-insert carried entries for every today-month receivable with balance > 0
+  todayMonth.receivables
+    .filter(r => (Number(r.amount) || 0) > 0)
+    .forEach(r => {
+      nextMonth.receivables.push({
+        id: 'carried_' + r.id,   // stable ID derived from source so we can find it
+        name: r.name,
+        amount: r.amount,
+        _carriedFrom: todayMk,   // marks this as a mirror, not an original
+        _sourceId: r.id,
+      });
+    });
 }
 
 /* ===========================================================
@@ -245,7 +285,11 @@ function renderFYSelect() {
 // them (e.g. months created before this auto-provisioning existed). Returns touched month keys.
 function monthIsMissingProvisions(mk) {
   const m = DB.months[mk];
-  if (!m) return false; // doesn't exist yet — handled by the isNew branch instead
+  if (!m) return false; // doesn't exist yet — handled by the isNew branch
+  // Only auto-heal months that are strictly after today. Past months and today's
+  // month are never healed on navigation — new recurring items are only pushed
+  // to them if you explicitly open Edit Recurring from that month and save.
+  if (mk <= todayMonthKey()) return false;
   const hasAnyRecurringTemplate = DB.recurringTemplate && DB.recurringTemplate.length > 0;
   const hasRecurringPayments = m.payments.some(p => p.recurring);
   const hasTdsLine = m.payments.some(p => /^TDS provisional/i.test(p.name));
@@ -421,22 +465,32 @@ function renderReceivables() {
   const mk = DB.selectedMonth;
   const m = getMonth(mk);
   const tbody = document.querySelector('#receivablesTable tbody');
-  const total = m.receivables.reduce((s, r) => s + (Number(r.amount) || 0), 0);
+  const isFutureMonth = mk > todayMonthKey();
+  // Carried items excluded from total until the month becomes current
+  const total = m.receivables
+    .filter(r => !isFutureMonth || !r._carriedFrom)
+    .reduce((s, r) => s + (Number(r.amount) || 0), 0);
   document.getElementById('receivablesTotal').textContent = fmtMoney(total);
   if (!m.receivables.length) {
     tbody.innerHTML = '<tr><td colspan="3" class="empty-note">No outstanding receivables.</td></tr>';
     return;
   }
-  tbody.innerHTML = m.receivables.map(r => `
-    <tr>
-      <td>${escapeHtml(r.name)}</td>
+  tbody.innerHTML = m.receivables.map(r => {
+    const isCarried = !!r._carriedFrom;
+    const nameCell = isCarried
+      ? `${escapeHtml(r.name)} <span style="font-size:10px; color:var(--ink-soft); font-style:italic;">↩ b/f from ${monthLabel(r._carriedFrom)}</span>`
+      : escapeHtml(r.name);
+    const actions = isCarried
+      ? `<span style="color:var(--ink-soft); font-size:11px;" title="Edit this in ${monthLabel(r._carriedFrom)}">&#128274;</span>`
+      : `<button data-receive="${r.id}" title="Record payment received">&#10003;</button>
+         <button data-edit-receivable="${r.id}" title="Edit">&#9998;</button>
+         <button data-del-receivable="${r.id}" title="Delete">&#10005;</button>`;
+    return `<tr>
+      <td>${nameCell}</td>
       <td class="amt">${fmtMoney(r.amount)}</td>
-      <td class="row-actions">
-        <button data-receive="${r.id}" title="Record payment received">&#10003;</button>
-        <button data-edit-receivable="${r.id}" title="Edit">&#9998;</button>
-        <button data-del-receivable="${r.id}" title="Delete">&#10005;</button>
-      </td>
-    </tr>`).join('');
+      <td class="row-actions">${actions}</td>
+    </tr>`;
+  }).join('');
   tbody.querySelectorAll('[data-receive]').forEach(b => b.onclick = () => openPaymentReceivedFor(b.dataset.receive));
   tbody.querySelectorAll('[data-edit-receivable]').forEach(b => b.onclick = () => openEditReceivable(b.dataset.editReceivable));
   tbody.querySelectorAll('[data-del-receivable]').forEach(b => b.onclick = () => deleteReceivable(b.dataset.delReceivable));
@@ -593,7 +647,8 @@ function openAddInvoice() {
     const text = [lic, units, pi].filter(Boolean).join(' ');
     const m = getMonth(DB.selectedMonth);
     m.receivables.push({ id: uid(), name: text, amount: Math.round(total * 100) / 100, _base: base, _gst: gst });
-    saveDB(); renderAll(); closeModal();
+    if (DB.selectedMonth === todayMonthKey()) syncCarriedReceivables();
+    saveDB([nextMonthKey(todayMonthKey())]); renderAll(); closeModal();
     toast(`Added ${text} to receivables (${fmtMoney(total)})`);
   };
 }
@@ -660,7 +715,8 @@ function openPaymentReceivedFor(receivableId) {
     const gstAmt = parseFloat(document.getElementById('pr-gst-amount').value) || 0;
 
     if (!isPart) {
-      m.receipts.push({ id: uid(), name: rec.name, amount: rec.amount, status: 'RECD' });
+      // Store _receivableId so deleting this receipt can restore the receivable (item 1)
+      m.receipts.push({ id: uid(), name: rec.name, amount: rec.amount, status: 'RECD', _receivableId: rec.id, _receivableMonth: DB.selectedMonth, _fullPayment: true });
       m.receivables = m.receivables.filter(r => r.id !== rec.id);
       toast(`Recorded full payment of ${fmtMoney(rec.amount)} from ${rec.name}`);
     } else {
@@ -684,7 +740,9 @@ function openPaymentReceivedFor(receivableId) {
       }
     }
 
-    saveDB(extraMk ? [extraMk] : []); renderAll(); closeModal();
+    if (DB.selectedMonth === todayMonthKey()) syncCarriedReceivables();
+    const nextMk = nextMonthKey(todayMonthKey());
+    saveDB(extraMk ? [extraMk, nextMk] : [nextMk]); renderAll(); closeModal();
   };
   toggleType();
 }
@@ -736,13 +794,7 @@ function renderRecurringEditor() {
   };
 }
 
-// Pushes current recurringTemplate amounts into the selected month and all later months in the same FY
-// that don't already have a manually-edited value for that item this cycle. Returns the touched month keys.
-// Pushes current recurringTemplate amounts into every month of the current financial year
-// (not just from fromMk onward) — this both updates future months going forward and backfills
-// any already-created month that's missing recurring items (e.g. from before this was automatic).
-// Returns the touched month keys.
-// Pushes current recurringTemplate amounts into the selected month and all later months in the
+// Pushes current recurringTemplate into the selected month and all later months in the
 // same FY — never touches months before fromMk. Returns the touched month keys.
 function applyRecurringForward(fromMk) {
   const months = monthsOfFY(fyLabelForMonth(fromMk)).filter(mk => mk >= fromMk);
@@ -918,6 +970,42 @@ function openImportOrder() {
     toast(`Import order ${orderNum} added for ${monthLabel(mk)}`);
   };
 }
+
+/* ===========================================================
+   ACTION: Ad Hoc Receivable
+   A miscellaneous receivable with no PI/GST impact —
+   e.g. tax refund, reimbursement from third party.
+   Carries forward like a regular receivable if unpaid.
+   =========================================================== */
+function openAdHocReceivable() {
+  const months = monthsOfFY(DB.currentFY);
+  const body = `
+    <div class="field"><label>Description</label>
+      <input type="text" id="ahr-name" placeholder="e.g. Tax refund, Customs duty refund">
+    </div>
+    <div class="field"><label>Amount</label>
+      <input type="number" id="ahr-amount" placeholder="0">
+    </div>
+    <div class="field"><label>Month</label>
+      <select id="ahr-month">${months.map(mk => `<option value="${mk}" ${mk===DB.selectedMonth?'selected':''}>${monthLabel(mk)}</option>`).join('')}</select>
+    </div>
+    <div class="hint">No GST or deduction applied — amount entered is the full receivable amount. Carries forward to the following month if unpaid, same as a regular receivable.</div>`;
+  openModal('Add ad hoc receivable', body, `<button class="btn" id="ahr-cancel">Cancel</button><button class="btn btn-primary" id="ahr-save">Save</button>`);
+  document.getElementById('ahr-cancel').onclick = closeModal;
+  document.getElementById('ahr-save').onclick = () => {
+    const name = document.getElementById('ahr-name').value.trim();
+    const amount = parseFloat(document.getElementById('ahr-amount').value) || 0;
+    const mk = document.getElementById('ahr-month').value;
+    if (!name) { toast('Description is required'); return; }
+    if (!amount) { toast('Amount is required'); return; }
+    const m = ensureMonthExists(mk);
+    m.receivables.push({ id: uid(), name, amount, _adhoc: true });
+    if (mk === todayMonthKey()) syncCarriedReceivables();
+    saveDB([mk, nextMonthKey(todayMonthKey())]); renderAll(); closeModal();
+    toast(`Added ad hoc receivable: ${name} (${fmtMoney(amount)})`);
+  };
+}
+
 function openEditImport(importId) {
   const m = getMonth(DB.selectedMonth);
   const o = (m.imports || []).find(o => o.id === importId);
@@ -1073,12 +1161,10 @@ function openEditReceipt(id) {
     r.status = document.getElementById('er-status').value;
 
     if (isLinkedPart) {
-      const delta = newAmount - oldAmount; // positive = more received than before
+      const delta = newAmount - oldAmount;
       const recMonth = getMonth(r._receivableMonth || DB.selectedMonth);
       let rec = recMonth.receivables.find(rv => rv.id === r._receivableId);
       if (!rec && delta < 0) {
-        // Receivable was already fully closed out, but we're now reducing what was actually
-        // received — the shortfall is owed again, so recreate it.
         rec = { id: r._receivableId, name: r.name, amount: 0 };
         recMonth.receivables.push(rec);
       }
@@ -1090,7 +1176,9 @@ function openEditReceipt(id) {
       }
     }
 
-    saveDB(); renderAll(); closeModal();
+    const recvMonth = r._receivableMonth || DB.selectedMonth;
+    if (recvMonth === todayMonthKey()) syncCarriedReceivables();
+    saveDB([nextMonthKey(todayMonthKey())]); renderAll(); closeModal();
   };
 }
 function deleteReceipt(id) {
@@ -1101,14 +1189,18 @@ function deleteReceipt(id) {
     const recMonth = getMonth(r._receivableMonth || DB.selectedMonth);
     let rec = recMonth.receivables.find(rv => rv.id === r._receivableId);
     if (!rec) {
+      // Receivable was removed (fully paid) — recreate it so the amount is restored
       rec = { id: r._receivableId, name: r.name, amount: 0 };
       recMonth.receivables.push(rec);
     }
     rec.amount = (Number(rec.amount) || 0) + (Number(r.amount) || 0);
+    const restoredTo = r._receivableMonth || DB.selectedMonth;
     toast(`Receipt deleted — ${fmtMoney(r.amount)} restored to receivables`);
+    // Sync carry-forward if the restored receivable is in today's month
+    if (restoredTo === todayMonthKey()) syncCarriedReceivables();
   }
   m.receipts = m.receipts.filter(r => r.id !== id);
-  saveDB(); renderAll();
+  saveDB([nextMonthKey(todayMonthKey())]); renderAll();
 }
 
 function openEditPayment(id) {
@@ -1184,7 +1276,8 @@ function openEditReceivable(id) {
   document.getElementById('erv-delete').onclick = () => {
     if (!confirm(`Delete "${r.name}"?`)) return;
     m.receivables = m.receivables.filter(x => x.id !== id);
-    saveDB(); renderAll(); closeModal();
+    if (DB.selectedMonth === todayMonthKey()) syncCarriedReceivables();
+    saveDB([nextMonthKey(todayMonthKey())]); renderAll(); closeModal();
     toast(`Receivable removed: ${r.name}`);
   };
   document.getElementById('erv-save').onclick = () => {
@@ -1192,7 +1285,8 @@ function openEditReceivable(id) {
     const amount = parseFloat(document.getElementById('erv-amount').value) || 0;
     if (!name) { toast('Name is required'); return; }
     r.name = name; r.amount = amount;
-    saveDB(); renderAll(); closeModal();
+    if (DB.selectedMonth === todayMonthKey()) syncCarriedReceivables();
+    saveDB([nextMonthKey(todayMonthKey())]); renderAll(); closeModal();
     toast(`Receivable updated: ${name}`);
   };
 }
@@ -1200,7 +1294,8 @@ function deleteReceivable(id) {
   if (!confirm('Delete this receivable?')) return;
   const m = getMonth(DB.selectedMonth);
   m.receivables = m.receivables.filter(r => r.id !== id);
-  saveDB(); renderAll();
+  if (DB.selectedMonth === todayMonthKey()) syncCarriedReceivables();
+  saveDB([nextMonthKey(todayMonthKey())]); renderAll();
 }
 
 
@@ -1308,6 +1403,7 @@ function wireActionBar() {
         scheduleStandard: openScheduleStandard,
         addVendor: openAddVendor,
         importOrder: openImportOrder,
+        adHocReceivable: openAdHocReceivable,
       })[action]?.();
     });
   });
@@ -1351,7 +1447,8 @@ function init() {
   ensureMonthExists(DB.selectedMonth);
   ensureMonthlyProvisions(DB.selectedMonth);
   recalcTDSRollup(prevMonthKey(DB.selectedMonth));
-  saveDB();
+  syncCarriedReceivables();
+  saveDB([nextMonthKey(todayMonthKey())]);
   wireActionBar();
   wireStaticButtons();
   renderAll();
@@ -1367,7 +1464,6 @@ async function startApp() {
       if (hasAnyCloudData) {
         DB = cloudDB;
       } else {
-        // First ever run: seed from the bundled spreadsheet data, then push it up.
         DB = buildSeedDB();
         DB._workspaceId = cloudDB._workspaceId;
       }
@@ -1376,7 +1472,8 @@ async function startApp() {
       ensureMonthExists(DB.selectedMonth);
       ensureMonthlyProvisions(DB.selectedMonth);
       recalcTDSRollup(prevMonthKey(DB.selectedMonth));
-      saveDB([prevMonthKey(DB.selectedMonth)]);
+      syncCarriedReceivables();
+      saveDB([prevMonthKey(DB.selectedMonth), nextMonthKey(todayMonthKey())]);
       Cloud.startRealtime();
     } catch (err) {
       console.error('Cloud load failed, falling back to local data', err);

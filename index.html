@@ -579,20 +579,6 @@
 <div id="modalRoot"></div>
 <div class="toast" id="toast"></div>
 
-<!-- TEMPORARY DIAGNOSTIC — remove after debugging -->
-<div style="position:fixed; bottom:60px; right:20px; z-index:500;">
-  <button onclick="
-    const mk = todayMonthKey();
-    const m = DB.months[mk] || {receipts:[], receivables:[]};
-    const msg = 'Month: ' + mk +
-      '\nReceipts count: ' + m.receipts.length +
-      '\nReceipts: ' + m.receipts.map(r => r.name + ' = ' + r.amount).join(', ') +
-      '\n\nReceivables count: ' + m.receivables.length +
-      '\nReceivables: ' + m.receivables.filter(r=>!r._carriedFrom).map(r => r.name + ' = ' + r.amount).join(', ');
-    alert(msg);
-  " style="background:#a4302a; color:#fff; border:none; padding:10px 16px; border-radius:6px; cursor:pointer; font-size:13px; box-shadow:0 4px 12px rgba(0,0,0,.3);">🔍 Diagnose</button>
-</div>
-
 </div><!-- /#mainApp -->
 
 <script id="seedData" type="application/json">

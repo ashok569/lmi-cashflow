@@ -743,7 +743,9 @@ function openPaymentReceivedFor(receivableId) {
 
     if (DB.selectedMonth === todayMonthKey()) syncCarriedReceivables();
     const nextMk = nextMonthKey(todayMonthKey());
-    saveDB(extraMk ? [extraMk, nextMk] : [nextMk]); renderAll(); closeModal();
+    saveDB(extraMk ? [extraMk, nextMk] : [nextMk]);
+    closeModal();
+    setTimeout(() => renderAll(), 50);
   };
   toggleType();
 }

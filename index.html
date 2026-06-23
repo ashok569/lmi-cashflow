@@ -1,3 +1,4 @@
+<!-- LMI Cashflow Manager — index.html — VERSION 2.1.1 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -527,6 +528,7 @@
       <button class="btn btn-gold" data-action="addVendor">+ Add vendor</button>
       <button class="btn" data-action="importOrder">Import order</button>
       <button class="btn" data-action="adHocReceivable">+ Ad hoc receivable</button>
+      <button class="btn" data-action="scenarioPlanner" style="background:var(--navy); color:#fff; border-color:var(--navy);">&#9654; Scenario planner</button>
     </div>
 
     <div class="ledger-wrap">
@@ -578,6 +580,69 @@
 <!-- ============ MODALS ============ -->
 <div id="modalRoot"></div>
 <div class="toast" id="toast"></div>
+
+<!-- ============ SCENARIO PLANNER OVERLAY ============ -->
+<div id="scenarioOverlay" style="display:none; position:fixed; inset:0; background:var(--paper); z-index:80; overflow-y:auto;">
+  <div style="max-width:1100px; margin:0 auto; padding:22px 22px 80px 22px;">
+
+    <!-- Header -->
+    <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:20px; padding-bottom:14px; border-bottom:2px solid var(--gold);">
+      <div>
+        <h2 style="font-family:var(--serif); font-size:22px; color:var(--navy); margin:0;">&#9654; Scenario Planner</h2>
+        <span style="font-size:12px; color:var(--ink-soft);">What-if cashflow modelling — does not affect live data</span>
+      </div>
+      <div style="display:flex; gap:8px; align-items:center;">
+        <select id="sp-saved-list" style="font-family:var(--sans); font-size:13px; padding:7px 10px; border:1px solid var(--line); border-radius:5px; min-width:180px;">
+          <option value="">— Saved scenarios —</option>
+        </select>
+        <button class="btn btn-sm" id="sp-load-btn">Load</button>
+        <button class="btn btn-sm btn-danger" id="sp-delete-btn">Delete</button>
+        <button class="btn btn-sm btn-primary" id="sp-save-btn">Save scenario</button>
+        <button class="btn btn-sm" id="sp-close-btn">✕ Close</button>
+      </div>
+    </div>
+
+    <!-- Three columns: Spend | Inflow | Report -->
+    <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:18px;">
+
+      <!-- COLUMN 1: Planned Spend -->
+      <div class="panel">
+        <div class="panel-head"><h2>Planned spend</h2><button class="btn btn-sm" id="sp-add-spend">+ Add line</button></div>
+        <div class="panel-body">
+          <div id="sp-spend-lines"></div>
+          <div style="margin-top:12px; padding-top:10px; border-top:1px solid var(--line); display:flex; justify-content:space-between; font-weight:700; font-size:13px;">
+            <span>Total spend</span>
+            <span id="sp-spend-total" style="font-family:var(--mono);">₹0</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- COLUMN 2: Inflow -->
+      <div class="panel">
+        <div class="panel-head"><h2>Inflow</h2><button class="btn btn-sm" id="sp-add-unlisted">+ Unlisted</button></div>
+        <div class="panel-body">
+          <div style="font-size:11px; text-transform:uppercase; letter-spacing:.06em; color:var(--ink-soft); margin-bottom:8px;">Current month receivables</div>
+          <div id="sp-recv-checks"></div>
+          <div style="font-size:11px; text-transform:uppercase; letter-spacing:.06em; color:var(--ink-soft); margin:12px 0 8px 0;">Unlisted inflows</div>
+          <div id="sp-unlisted-lines"></div>
+          <div style="margin-top:12px; padding-top:10px; border-top:1px solid var(--line); display:flex; justify-content:space-between; font-weight:700; font-size:13px;">
+            <span>Total inflow</span>
+            <span id="sp-inflow-total" style="font-family:var(--mono);">₹0</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- COLUMN 3: Report -->
+      <div class="panel">
+        <div class="panel-head"><h2>Projected report</h2></div>
+        <div class="panel-body" id="sp-report-body">
+          <div style="color:var(--ink-soft); font-size:12.5px; font-style:italic;">Add spend and inflow items to see projections.</div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
 
 </div><!-- /#mainApp -->
 

@@ -1,5 +1,7 @@
 /* ===========================================================
    LMI Cashflow Manager — application logic
+   VERSION 2.1.3 — fix: opening balance Reset to auto button,
+   removes manual override so month cascades from prior closing.
    VERSION 2.1.2 — fix: provisioning stamp prevents deleted
    payments (Salaries, Reimbursements etc.) from reappearing
    on navigation. sync.js updated to stamp existing cloud months.
@@ -588,7 +590,7 @@ function openUpdateOpening() {
       <input type="number" id="ob-amount" placeholder="e.g. 2500000" value="${getOpening(defaultMk)||''}">
     </div>
     <div class="hint" id="ob-hint">${escapeHtml(openingHintText(defaultMk))}</div>`;
-  const foot = `<button class="btn" id="ob-cancel">Cancel</button><button class="btn btn-primary" id="ob-save">Save</button>`;
+  const foot = `<button class="btn" id="ob-cancel">Cancel</button><button class="btn btn-sm" id="ob-reset" title="Remove manual override — opening balance will auto-calculate from previous month closing">↺ Reset to auto</button><button class="btn btn-primary" id="ob-save">Save</button>`;
   openModal('Update opening balance', body, foot);
   document.getElementById('ob-cancel').onclick = closeModal;
 
@@ -597,6 +599,15 @@ function openUpdateOpening() {
     document.getElementById('ob-amount').value = getOpening(mk) || '';
     document.getElementById('ob-hint').textContent = openingHintText(mk);
   });
+
+  document.getElementById('ob-reset').onclick = () => {
+    const mk = document.getElementById('ob-month').value;
+    ensureMonthExists(mk);
+    DB.months[mk].openingManual = false;
+    DB.months[mk].opening = 0;
+    saveDB([mk]); renderAll(); closeModal();
+    toast(`${monthLabel(mk)} opening balance now auto-calculates from ${monthLabel(prevMonthKey(mk))} closing`);
+  };
 
   document.getElementById('ob-save').onclick = () => {
     const mk = document.getElementById('ob-month').value;

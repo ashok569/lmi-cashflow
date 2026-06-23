@@ -1185,25 +1185,64 @@ function openEditReceipt(id) {
   };
 }
 function deleteReceipt(id) {
-  if (!confirm('Delete this receipt?')) return;
   const m = getMonth(DB.selectedMonth);
   const r = m.receipts.find(r => r.id === id);
-  if (r && r._receivableId) {
-    const recMonth = getMonth(r._receivableMonth || DB.selectedMonth);
-    let rec = recMonth.receivables.find(rv => rv.id === r._receivableId);
-    if (!rec) {
-      // Receivable was removed (fully paid) — recreate it so the amount is restored
-      rec = { id: r._receivableId, name: r.name, amount: 0 };
-      recMonth.receivables.push(rec);
+  if (!r) return;
+
+  const nextMk = nextMonthKey(DB.selectedMonth);
+  const nextM = DB.months[nextMk];
+  const existingGst = nextM ? nextM.payments.find(p => /^GST/i.test(p.name)) : null;
+  const gstHint = existingGst
+    ? `Next month currently has a GST line of ${fmtMoney(existingGst.amount)}. Any amount you enter here will be deducted from it.`
+    : `Next month has no GST line yet — if you enter an amount it will be skipped (nothing to deduct from).`;
+
+  const body = `
+    <div class="field">
+      <label>Receipt being deleted</label>
+      <div style="padding:8px 0; font-weight:600;">${escapeHtml(r.name)} — ${fmtMoney(r.amount)}</div>
+    </div>
+    <div class="field">
+      <label>GST included in this receipt (enter 0 if none)</label>
+      <input type="number" id="del-gst" value="0" min="0">
+    </div>
+    <div class="hint">${gstHint}</div>`;
+
+  openModal('Delete receipt', body,
+    `<button class="btn" id="del-cancel">Cancel</button>
+     <button class="btn btn-danger" id="del-confirm">Delete receipt</button>`);
+
+  document.getElementById('del-cancel').onclick = closeModal;
+  document.getElementById('del-confirm').onclick = () => {
+    const gstAmt = parseFloat(document.getElementById('del-gst').value) || 0;
+
+    // Restore receivable if this was a linked payment
+    if (r._receivableId) {
+      const recMonth = getMonth(r._receivableMonth || DB.selectedMonth);
+      let rec = recMonth.receivables.find(rv => rv.id === r._receivableId);
+      if (!rec) {
+        rec = { id: r._receivableId, name: r.name, amount: 0 };
+        recMonth.receivables.push(rec);
+      }
+      rec.amount = (Number(rec.amount) || 0) + (Number(r.amount) || 0);
+      const restoredTo = r._receivableMonth || DB.selectedMonth;
+      if (restoredTo === todayMonthKey()) syncCarriedReceivables();
     }
-    rec.amount = (Number(rec.amount) || 0) + (Number(r.amount) || 0);
-    const restoredTo = r._receivableMonth || DB.selectedMonth;
-    toast(`Receipt deleted — ${fmtMoney(r.amount)} restored to receivables`);
-    // Sync carry-forward if the restored receivable is in today's month
-    if (restoredTo === todayMonthKey()) syncCarriedReceivables();
-  }
-  m.receipts = m.receipts.filter(r => r.id !== id);
-  saveDB([nextMonthKey(todayMonthKey())]); renderAll();
+
+    // Deduct GST from next month's GST line if amount entered and line exists
+    const extraMks = [nextMonthKey(todayMonthKey())];
+    if (gstAmt > 0 && existingGst) {
+      existingGst.amount = Math.max(0, (Number(existingGst.amount) || 0) - gstAmt);
+      if (!extraMks.includes(nextMk)) extraMks.push(nextMk);
+      toast(`Receipt deleted — GST of ${fmtMoney(gstAmt)} deducted from ${monthLabel(nextMk)} GST line`);
+    } else {
+      toast(`Receipt deleted${r._receivableId ? ' — amount restored to receivables' : ''}`);
+    }
+
+    m.receipts = m.receipts.filter(x => x.id !== id);
+    saveDB(extraMks);
+    closeModal();
+    setTimeout(() => renderAll(), 50);
+  };
 }
 
 function openEditPayment(id) {

@@ -1,5 +1,8 @@
 /* ===========================================================
    LMI Cashflow Manager — application logic
+   VERSION 2.1.2 — fix: provisioning stamp prevents deleted
+   payments (Salaries, Reimbursements etc.) from reappearing
+   on navigation. sync.js updated to stamp existing cloud months.
    VERSION 2.1.1 — adds: Scenario Planner (what-if cashflow
    modelling, 3-month projection, save/load/delete scenarios),
    receipt delete GST deduction modal, receipt render fix.
@@ -113,6 +116,7 @@ function buildSeedDB() {
       hdfc: m.hdfc || 0,
       yesbank: m.yesbank || 0,
       openingManual: true,
+      _provisioned: true, // seeded from spreadsheet — treat as already provisioned
       receipts: m.receipts.map(r => ({ id: uid(), name: r.name, amount: r.amount, status: r.status || 'RECD' })),
       payments: m.payments.map(p => ({ id: uid(), name: p.name, amount: p.amount, status: p.status || 'planned', recurring: !!p.recurring, tds: !!p.tds })),
       receivables: m.receivables.map(r => ({ id: uid(), name: r.name, amount: r.amount })),
@@ -289,9 +293,10 @@ function renderFYSelect() {
 function monthIsMissingProvisions(mk) {
   const m = DB.months[mk];
   if (!m) return false; // doesn't exist yet — handled by the isNew branch
-  // Only auto-heal months that are strictly after today. Past months and today's
-  // month are never healed on navigation — new recurring items are only pushed
-  // to them if you explicitly open Edit Recurring from that month and save.
+  // Once a month has been provisioned, never re-provision it — even if the user
+  // deleted items they didn't want. The _provisioned stamp is set by ensureMonthlyProvisions.
+  if (m._provisioned) return false;
+  // Only auto-heal months strictly after today
   if (mk <= todayMonthKey()) return false;
   const hasAnyRecurringTemplate = DB.recurringTemplate && DB.recurringTemplate.length > 0;
   const hasRecurringPayments = m.payments.some(p => p.recurring);
@@ -1353,10 +1358,12 @@ function deleteReceivable(id) {
 function ensureMonthlyProvisions(mk) {
   const m = ensureMonthExists(mk);
 
-  // Recurring (starred) payments — Salaries, Reimbursement, etc. — were previously only
-  // populated via the "Edit recurring" save action, so any month nobody had opened that
-  // editor for after stayed empty. Apply the standing recurring template here too, so every
-  // month gets these automatically the first time it's created.
+  // Mark as provisioned immediately — this prevents re-provisioning if the user
+  // later deletes items they don't want (e.g. recurring items carried from seed data
+  // that were manually removed). Once stamped, this month is never auto-provisioned again.
+  m._provisioned = true;
+
+  // Recurring (starred) payments — only add if not already present
   DB.recurringTemplate.forEach(tpl => {
     const existing = m.payments.find(p => p.recurring && p.name.toLowerCase().startsWith(tpl.name.toLowerCase()));
     if (!existing) {

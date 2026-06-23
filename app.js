@@ -1,5 +1,8 @@
 /* ===========================================================
    LMI Cashflow Manager — application logic
+   VERSION 2.1.1 — adds: Scenario Planner (what-if cashflow
+   modelling, 3-month projection, save/load/delete scenarios),
+   receipt delete GST deduction modal, receipt render fix.
    VERSION 2.1 — adds: Ad Hoc Receivables button (no PI/GST),
    carry-forward exclusion from future-month totals, full-
    payment receipt deletion restores receivable.
@@ -1446,6 +1449,7 @@ function wireActionBar() {
         addVendor: openAddVendor,
         importOrder: openImportOrder,
         adHocReceivable: openAdHocReceivable,
+        scenarioPlanner: openScenarioPlanner,
       })[action]?.();
     });
   });
@@ -1686,4 +1690,331 @@ function openAddUser() {
       errEl.style.display = 'block';
     }
   };
+}
+
+/* ===========================================================
+   SCENARIO PLANNER
+   A what-if cashflow modelling workspace. Reads live data
+   but writes nothing back. Scenarios saved to DB.scenarios.
+   =========================================================== */
+
+// Active scenario state — reset each time planner is opened or loaded
+let SP = null;
+
+function spEmptyScenario() {
+  return {
+    name: '',
+    spendLines: [],       // [{id, label, amount}]
+    checkedRecvIds: [],   // receivable ids selected for inflow
+    unlistedInflows: [],  // [{id, label, amount}]
+  };
+}
+
+function openScenarioPlanner() {
+  if (!SP) SP = spEmptyScenario();
+  if (!DB.scenarios) DB.scenarios = [];
+  document.getElementById('scenarioOverlay').style.display = 'block';
+  document.body.style.overflow = 'hidden';
+  spPopulateSavedList();
+  spRender();
+  spWireButtons();
+}
+
+function closeScenarioPlanner() {
+  document.getElementById('scenarioOverlay').style.display = 'none';
+  document.body.style.overflow = '';
+}
+
+function spWireButtons() {
+  document.getElementById('sp-close-btn').onclick = () => {
+    if (confirm('Close Scenario Planner? Unsaved changes will be lost.')) closeScenarioPlanner();
+  };
+  document.getElementById('sp-add-spend').onclick = spAddSpendLine;
+  document.getElementById('sp-add-unlisted').onclick = spAddUnlisted;
+  document.getElementById('sp-save-btn').onclick = spSaveScenario;
+  document.getElementById('sp-load-btn').onclick = spLoadSelected;
+  document.getElementById('sp-delete-btn').onclick = spDeleteSelected;
+}
+
+/* ---------- Spend lines ---------- */
+function spAddSpendLine(label = '', amount = 0) {
+  const id = uid();
+  SP.spendLines.push({ id, label, amount });
+  spRenderSpend();
+  spRenderReport();
+  // Focus the new label input
+  setTimeout(() => {
+    const input = document.querySelector(`[data-sp-spend-label="${id}"]`);
+    if (input) input.focus();
+  }, 50);
+}
+
+function spRenderSpend() {
+  const wrap = document.getElementById('sp-spend-lines');
+  if (!SP.spendLines.length) {
+    wrap.innerHTML = '<div class="empty-note">No spend lines yet. Click + Add line.</div>';
+    document.getElementById('sp-spend-total').textContent = '₹0';
+    return;
+  }
+  wrap.innerHTML = SP.spendLines.map(s => `
+    <div style="display:grid; grid-template-columns:1fr auto auto; gap:6px; align-items:center; margin-bottom:8px;">
+      <input type="text" data-sp-spend-label="${s.id}" value="${escapeHtml(s.label)}"
+        placeholder="e.g. Import order, Marketing"
+        style="padding:7px 9px; border:1px solid var(--line); border-radius:4px; font-size:13px; font-family:var(--sans);">
+      <input type="number" data-sp-spend-amt="${s.id}" value="${s.amount || ''}"
+        placeholder="0"
+        style="width:110px; padding:7px 9px; border:1px solid var(--line); border-radius:4px; font-size:13px; font-family:var(--mono); text-align:right;">
+      <button data-sp-del-spend="${s.id}" style="border:none; background:none; color:#aab2bd; cursor:pointer; font-size:14px; padding:4px;">✕</button>
+    </div>`).join('');
+
+  // Wire inputs
+  wrap.querySelectorAll('[data-sp-spend-label]').forEach(inp => {
+    inp.oninput = () => {
+      const s = SP.spendLines.find(x => x.id === inp.dataset.spSpendLabel);
+      if (s) { s.label = inp.value; spRenderReport(); }
+    };
+  });
+  wrap.querySelectorAll('[data-sp-spend-amt]').forEach(inp => {
+    inp.oninput = () => {
+      const s = SP.spendLines.find(x => x.id === inp.dataset.spSpendAmt);
+      if (s) { s.amount = parseFloat(inp.value) || 0; spRenderReport(); spUpdateSpendTotal(); }
+    };
+  });
+  wrap.querySelectorAll('[data-sp-del-spend]').forEach(btn => {
+    btn.onclick = () => {
+      SP.spendLines = SP.spendLines.filter(x => x.id !== btn.dataset.spDelSpend);
+      spRenderSpend(); spRenderReport();
+    };
+  });
+  spUpdateSpendTotal();
+}
+
+function spUpdateSpendTotal() {
+  const total = SP.spendLines.reduce((s, x) => s + (Number(x.amount) || 0), 0);
+  document.getElementById('sp-spend-total').textContent = fmtMoney(total);
+}
+
+/* ---------- Receivables checklist ---------- */
+function spRenderRecvChecks() {
+  const todayMk = todayMonthKey();
+  const m = DB.months[todayMk];
+  const wrap = document.getElementById('sp-recv-checks');
+  const ownRecvs = m ? m.receivables.filter(r => !r._carriedFrom && (Number(r.amount) || 0) > 0) : [];
+
+  if (!ownRecvs.length) {
+    wrap.innerHTML = '<div class="empty-note">No receivables in current month.</div>';
+    return;
+  }
+  wrap.innerHTML = ownRecvs.map(r => {
+    const checked = SP.checkedRecvIds.includes(r.id);
+    return `<div style="display:flex; align-items:center; gap:8px; margin-bottom:7px; font-size:13px;">
+      <input type="checkbox" id="sp-recv-${r.id}" ${checked ? 'checked' : ''} style="width:auto; cursor:pointer;">
+      <label for="sp-recv-${r.id}" style="flex:1; cursor:pointer; display:flex; justify-content:space-between;">
+        <span>${escapeHtml(r.name)}</span>
+        <span style="font-family:var(--mono); color:var(--ink-soft);">${fmtMoney(r.amount)}</span>
+      </label>
+    </div>`;
+  }).join('');
+
+  wrap.querySelectorAll('input[type="checkbox"]').forEach(cb => {
+    cb.onchange = () => {
+      const recvId = cb.id.replace('sp-recv-', '');
+      if (cb.checked) {
+        if (!SP.checkedRecvIds.includes(recvId)) SP.checkedRecvIds.push(recvId);
+      } else {
+        SP.checkedRecvIds = SP.checkedRecvIds.filter(x => x !== recvId);
+      }
+      spUpdateInflowTotal();
+      spRenderReport();
+    };
+  });
+}
+
+/* ---------- Unlisted inflows ---------- */
+function spAddUnlisted(label = '', amount = 0) {
+  const id = uid();
+  SP.unlistedInflows.push({ id, label, amount });
+  spRenderUnlisted();
+  spRenderReport();
+  setTimeout(() => {
+    const input = document.querySelector(`[data-sp-ul-label="${id}"]`);
+    if (input) input.focus();
+  }, 50);
+}
+
+function spRenderUnlisted() {
+  const wrap = document.getElementById('sp-unlisted-lines');
+  if (!SP.unlistedInflows.length) {
+    wrap.innerHTML = '<div class="empty-note">None added.</div>';
+    spUpdateInflowTotal();
+    return;
+  }
+  wrap.innerHTML = SP.unlistedInflows.map(u => `
+    <div style="display:grid; grid-template-columns:1fr auto auto; gap:6px; align-items:center; margin-bottom:8px;">
+      <input type="text" data-sp-ul-label="${u.id}" value="${escapeHtml(u.label)}"
+        placeholder="e.g. Expected bank transfer"
+        style="padding:7px 9px; border:1px solid var(--line); border-radius:4px; font-size:13px; font-family:var(--sans);">
+      <input type="number" data-sp-ul-amt="${u.id}" value="${u.amount || ''}"
+        placeholder="0"
+        style="width:110px; padding:7px 9px; border:1px solid var(--line); border-radius:4px; font-size:13px; font-family:var(--mono); text-align:right;">
+      <button data-sp-del-ul="${u.id}" style="border:none; background:none; color:#aab2bd; cursor:pointer; font-size:14px; padding:4px;">✕</button>
+    </div>`).join('');
+
+  wrap.querySelectorAll('[data-sp-ul-label]').forEach(inp => {
+    inp.oninput = () => {
+      const u = SP.unlistedInflows.find(x => x.id === inp.dataset.spUlLabel);
+      if (u) { u.label = inp.value; spRenderReport(); }
+    };
+  });
+  wrap.querySelectorAll('[data-sp-ul-amt]').forEach(inp => {
+    inp.oninput = () => {
+      const u = SP.unlistedInflows.find(x => x.id === inp.dataset.spUlAmt);
+      if (u) { u.amount = parseFloat(inp.value) || 0; spUpdateInflowTotal(); spRenderReport(); }
+    };
+  });
+  wrap.querySelectorAll('[data-sp-del-ul]').forEach(btn => {
+    btn.onclick = () => {
+      SP.unlistedInflows = SP.unlistedInflows.filter(x => x.id !== btn.dataset.spDelUl);
+      spRenderUnlisted(); spRenderReport();
+    };
+  });
+  spUpdateInflowTotal();
+}
+
+function spInflowTotal() {
+  const todayMk = todayMonthKey();
+  const m = DB.months[todayMk];
+  const recvTotal = m
+    ? m.receivables
+        .filter(r => !r._carriedFrom && SP.checkedRecvIds.includes(r.id))
+        .reduce((s, r) => s + (Number(r.amount) || 0), 0)
+    : 0;
+  const unlistedTotal = SP.unlistedInflows.reduce((s, u) => s + (Number(u.amount) || 0), 0);
+  return { recvTotal, unlistedTotal, total: recvTotal + unlistedTotal };
+}
+
+function spUpdateInflowTotal() {
+  document.getElementById('sp-inflow-total').textContent = fmtMoney(spInflowTotal().total);
+}
+
+/* ---------- Report ---------- */
+function spRenderReport() {
+  const todayMk = todayMonthKey();
+  const next1Mk = nextMonthKey(todayMk);
+  const next2Mk = nextMonthKey(next1Mk);
+
+  const totalSpend = SP.spendLines.reduce((s, x) => s + (Number(x.amount) || 0), 0);
+  const { recvTotal, unlistedTotal, total: inflowTotal } = spInflowTotal();
+
+  // Base projections from live data
+  const todayClosing = computeClosing(todayMk);
+  const next1Closing = computeClosing(next1Mk);
+  const next2Closing = computeClosing(next2Mk);
+
+  // Scenario projections
+  const todayScenario = todayClosing + inflowTotal - totalSpend;
+  // Next months cascade from the scenario closing of the prior month
+  const next1Base = getOpening(next1Mk);
+  const { receiptsTotal: r1, paymentsTotal: p1 } = monthTotals(next1Mk);
+  const next1Scenario = todayScenario + (r1 - p1); // uses scenario closing as next month's opening
+  const next2Base = getOpening(next2Mk);
+  const { receiptsTotal: r2, paymentsTotal: p2 } = monthTotals(next2Mk);
+  const next2Scenario = next1Scenario + (r2 - p2);
+
+  function row(label, value, bold = false, highlight = null) {
+    const color = highlight === 'good' ? 'var(--green)' : highlight === 'bad' ? 'var(--red)' : 'var(--ink)';
+    const fwt = bold ? '700' : '400';
+    return `<div style="display:flex; justify-content:space-between; padding:7px 0; border-bottom:1px solid #f0f1f3; font-size:13px; font-weight:${fwt}; color:${color};">
+      <span>${label}</span><span style="font-family:var(--mono);">${fmtMoney(value)}</span>
+    </div>`;
+  }
+  function sectionHead(label) {
+    return `<div style="font-size:10.5px; text-transform:uppercase; letter-spacing:.07em; color:var(--ink-soft); margin:14px 0 6px 0; font-weight:600;">${label}</div>`;
+  }
+  function divider() {
+    return `<div style="border-top:2px solid var(--line); margin:10px 0;"></div>`;
+  }
+
+  const spendBreakdown = SP.spendLines.length
+    ? SP.spendLines.map(s => row(`&nbsp;&nbsp;&nbsp;${escapeHtml(s.label) || 'Unnamed spend'}`, -(Number(s.amount) || 0))).join('')
+    : '';
+
+  const inflowBreakdown = SP.checkedRecvIds.length || SP.unlistedInflows.length
+    ? (SP.checkedRecvIds.length ? row('&nbsp;&nbsp;&nbsp;Selected receivables', recvTotal) : '')
+      + (SP.unlistedInflows.length ? row('&nbsp;&nbsp;&nbsp;Unlisted inflows', unlistedTotal) : '')
+    : '';
+
+  document.getElementById('sp-report-body').innerHTML = `
+    ${sectionHead(monthLabel(todayMk) + ' — current month')}
+    ${row('Live closing projection', todayClosing)}
+    ${inflowBreakdown}
+    ${spendBreakdown}
+    ${divider()}
+    ${row('Scenario closing', todayScenario, true, todayScenario >= 0 ? 'good' : 'bad')}
+
+    ${sectionHead(monthLabel(next1Mk) + ' — next month')}
+    ${row('Live closing projection', next1Closing)}
+    ${row('After scenario carry-forward', next1Scenario, true, next1Scenario >= 0 ? 'good' : 'bad')}
+
+    ${sectionHead(monthLabel(next2Mk) + ' — month after')}
+    ${row('Live closing projection', next2Closing)}
+    ${row('After scenario carry-forward', next2Scenario, true, next2Scenario >= 0 ? 'good' : 'bad')}
+  `;
+}
+
+/* ---------- Full render ---------- */
+function spRender() {
+  spRenderSpend();
+  spRenderRecvChecks();
+  spRenderUnlisted();
+  spRenderReport();
+}
+
+/* ---------- Save / Load / Delete ---------- */
+function spSaveScenario() {
+  const name = prompt('Save scenario as:', SP.name || '');
+  if (!name || !name.trim()) return;
+  if (!DB.scenarios) DB.scenarios = [];
+  const existing = DB.scenarios.find(s => s.name === name.trim());
+  if (existing) {
+    if (!confirm(`Overwrite existing scenario "${name.trim()}"?`)) return;
+    Object.assign(existing, { ...SP, name: name.trim(), savedAt: new Date().toISOString() });
+  } else {
+    DB.scenarios.push({ ...SP, name: name.trim(), savedAt: new Date().toISOString() });
+  }
+  SP.name = name.trim();
+  saveDB();
+  spPopulateSavedList();
+  toast(`Scenario "${name.trim()}" saved`);
+}
+
+function spPopulateSavedList() {
+  const sel = document.getElementById('sp-saved-list');
+  const current = sel.value;
+  sel.innerHTML = '<option value="">— Saved scenarios —</option>' +
+    (DB.scenarios || []).map(s =>
+      `<option value="${escapeHtml(s.name)}" ${s.name === current ? 'selected' : ''}>${escapeHtml(s.name)} (${new Date(s.savedAt).toLocaleDateString('en-IN')})</option>`
+    ).join('');
+}
+
+function spLoadSelected() {
+  const name = document.getElementById('sp-saved-list').value;
+  if (!name) { toast('Select a scenario to load'); return; }
+  const found = (DB.scenarios || []).find(s => s.name === name);
+  if (!found) return;
+  SP = { ...found };
+  spRender();
+  toast(`Loaded: ${name}`);
+}
+
+function spDeleteSelected() {
+  const name = document.getElementById('sp-saved-list').value;
+  if (!name) { toast('Select a scenario to delete'); return; }
+  if (!confirm(`Delete scenario "${name}"?`)) return;
+  DB.scenarios = (DB.scenarios || []).filter(s => s.name !== name);
+  saveDB();
+  spPopulateSavedList();
+  SP = spEmptyScenario();
+  spRender();
+  toast(`Deleted: ${name}`);
 }

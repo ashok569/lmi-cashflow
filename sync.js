@@ -1,5 +1,5 @@
 /* ===========================================================
-   LMI Cashflow Manager — Supabase sync layer
+   LMI Cashflow Manager — Supabase sync layer  VERSION 2.1.2
    Handles auth, cloud load/save, and realtime multi-device sync.
    Loaded BEFORE app.js. Exposes window.Cloud.
    =========================================================== */
@@ -109,15 +109,19 @@ async function cloudLoadAll() {
 }
 
 function rowToMonth(row) {
+  const payments = row.payments || [];
   return {
     opening: Number(row.opening) || 0,
     openingManual: !!row.opening_manual,
     hdfc: Number(row.hdfc) || 0,
     yesbank: Number(row.yesbank) || 0,
     receipts: row.receipts || [],
-    payments: row.payments || [],
+    payments,
     receivables: row.receivables || [],
     imports: row.imports || [],
+    // Any month already in the database with payments is treated as provisioned —
+    // prevents the self-healer from re-adding items the user deliberately deleted.
+    _provisioned: payments.length > 0,
   };
 }
 

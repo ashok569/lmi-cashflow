@@ -1,7 +1,9 @@
 /* ===========================================================
    LMI Cashflow Manager — application logic
-   VERSION 2.1.3 — fix: opening balance Reset to auto button,
-   removes manual override so month cascades from prior closing.
+   VERSION 2.2.1 — adds: Pending Actions board (shared task
+   list with sections per team member, done/delete, realtime),
+   opening balance Reset-to-auto button.
+   VERSION 2.1.3 — fix: opening balance Reset to auto button.
    VERSION 2.1.2 — fix: provisioning stamp prevents deleted
    payments (Salaries, Reimbursements etc.) from reappearing
    on navigation. sync.js updated to stamp existing cloud months.
@@ -329,19 +331,26 @@ function renderMonthTabs() {
   const wrap = document.getElementById('monthTabs');
   const months = monthsOfFY(DB.currentFY);
   const tmk = todayMonthKey();
+  const isPendingOpen = document.getElementById('pendingActionsOverlay') &&
+    document.getElementById('pendingActionsOverlay').style.display !== 'none';
   wrap.innerHTML = months.map(mk => {
-    const active = mk === DB.selectedMonth ? 'active' : '';
+    const active = (mk === DB.selectedMonth && !isPendingOpen) ? 'active' : '';
     const isCurrent = mk === tmk ? 'is-current' : '';
     const hasData = !!DB.months[mk];
     return `<button class="month-tab ${active} ${isCurrent} ${hasData ? '' : 'future'}" data-mk="${mk}">${monthLabel(mk)}${isCurrent ? '<span class="dot"></span>' : ''}</button>`;
-  }).join('');
-  wrap.querySelectorAll('.month-tab').forEach(btn => {
+  }).join('') +
+  `<button class="month-tab ${isPendingOpen ? 'active' : ''}" id="pendingActionsTab" style="border-left:2px solid rgba(255,255,255,.15); margin-left:8px;">&#9654; Pending actions</button>`;
+
+  wrap.querySelectorAll('.month-tab[data-mk]').forEach(btn => {
     btn.onclick = () => {
+      closePendingActions();
       const touched = selectMonth(btn.dataset.mk);
       saveDB(touched);
       renderAll();
     };
   });
+  const paTab = document.getElementById('pendingActionsTab');
+  if (paTab) paTab.onclick = openPendingActions;
 }
 
 function renderDashboard() {
@@ -2036,3 +2045,140 @@ function spDeleteSelected() {
   spRender();
   toast(`Deleted: ${name}`);
 }
+
+/* ===========================================================
+   PENDING ACTIONS
+   Shared task board with sections per team member + Completed.
+   Stored in DB.pendingActions (workspace-level, synced to cloud).
+   =========================================================== */
+
+const PA_SECTIONS = ['NIRALI', 'ASHOK', 'SANDEEP'];
+
+function paInit() {
+  if (!DB.pendingActions) {
+    DB.pendingActions = { NIRALI: [], ASHOK: [], SANDEEP: [], COMPLETED: [] };
+  }
+  // Ensure all sections exist (in case new ones added later)
+  [...PA_SECTIONS, 'COMPLETED'].forEach(s => {
+    if (!DB.pendingActions[s]) DB.pendingActions[s] = [];
+  });
+}
+
+function openPendingActions() {
+  paInit();
+  document.getElementById('pendingActionsOverlay').style.display = 'block';
+  document.body.style.overflow = 'hidden';
+  document.getElementById('pa-close-btn').onclick = closePendingActions;
+  renderMonthTabs(); // re-render so Pending Actions tab shows as active
+  paRender();
+}
+
+function closePendingActions() {
+  document.getElementById('pendingActionsOverlay').style.display = 'none';
+  document.body.style.overflow = '';
+  renderMonthTabs(); // re-render so current month tab shows as active again
+}
+
+function paRender() {
+  paInit();
+  const wrap = document.getElementById('pa-columns');
+  const sectionColors = {
+    NIRALI:    { hdr: '#1e4f8a', bg: '#e8f0fb' },
+    ASHOK:     { hdr: '#1f7a4d', bg: '#e6f4ec' },
+    SANDEEP:   { hdr: '#9a6b14', bg: '#fbf0dd' },
+    COMPLETED: { hdr: '#5b6470', bg: '#f6f4ee' },
+  };
+
+  const allSections = [...PA_SECTIONS, 'COMPLETED'];
+  wrap.innerHTML = allSections.map(section => {
+    const items = DB.pendingActions[section] || [];
+    const col = sectionColors[section];
+    const isCompleted = section === 'COMPLETED';
+
+    const itemsHtml = items.length ? items.map(item => `
+      <div style="display:flex; align-items:flex-start; gap:8px; padding:9px 0; border-bottom:1px solid #eef0f2;">
+        ${!isCompleted ? `<input type="checkbox" data-pa-done="${item.id}" data-pa-section="${section}" style="margin-top:3px; cursor:pointer; flex-shrink:0;">` : `<span style="color:var(--green); font-size:14px; flex-shrink:0;">&#10003;</span>`}
+        <div style="flex:1; min-width:0;">
+          <div style="font-size:13px; color:var(--ink); word-break:break-word;">${escapeHtml(item.text)}</div>
+          <div style="font-size:10.5px; color:var(--ink-soft); margin-top:3px;">
+            ${isCompleted ? `Done by <strong>${escapeHtml(item.doneBy || '')}</strong> &middot; ${item.doneAt ? new Date(item.doneAt).toLocaleDateString('en-IN', {day:'numeric',month:'short',year:'2-digit'}) : ''}` : `Added ${item.addedAt ? new Date(item.addedAt).toLocaleDateString('en-IN', {day:'numeric',month:'short'}) : ''}`}
+          </div>
+        </div>
+        <button data-pa-delete="${item.id}" data-pa-section="${section}" title="Delete permanently" style="border:none; background:none; color:#ccc; cursor:pointer; font-size:13px; padding:2px 4px; flex-shrink:0;">&#10005;</button>
+      </div>`).join('')
+    : `<div style="color:var(--ink-soft); font-size:12.5px; font-style:italic; padding:10px 0;">${isCompleted ? 'No completed items yet.' : 'No pending items.'}</div>`;
+
+    const addHtml = !isCompleted ? `
+      <div style="display:flex; gap:6px; margin-top:12px;">
+        <input type="text" id="pa-new-${section}" placeholder="Add item for ${section}..."
+          style="flex:1; padding:8px 10px; border:1px solid var(--line); border-radius:5px; font-size:13px; font-family:var(--sans);">
+        <button data-pa-add="${section}" class="btn btn-sm btn-primary">Add</button>
+      </div>` : '';
+
+    return `
+      <div class="panel">
+        <div class="panel-head" style="background:${col.bg};">
+          <h2 style="color:${col.hdr};">${section}</h2>
+          <span style="font-size:11px; color:${col.hdr}; font-weight:600;">${items.length} item${items.length !== 1 ? 's' : ''}</span>
+        </div>
+        <div class="panel-body">
+          <div id="pa-items-${section}">${itemsHtml}</div>
+          ${addHtml}
+        </div>
+      </div>`;
+  }).join('');
+
+  // Wire add buttons
+  wrap.querySelectorAll('[data-pa-add]').forEach(btn => {
+    const section = btn.dataset.paAdd;
+    const input = document.getElementById(`pa-new-${section}`);
+    const doAdd = () => {
+      const text = input.value.trim();
+      if (!text) return;
+      paInit();
+      DB.pendingActions[section].push({
+        id: uid(),
+        text,
+        addedAt: new Date().toISOString(),
+        addedBy: Cloud && Cloud.currentUser ? (Cloud.currentUser.displayName || Cloud.currentUser.email || '') : 'User',
+      });
+      input.value = '';
+      saveDB(); paRender();
+    };
+    btn.onclick = doAdd;
+    input.onkeydown = e => { if (e.key === 'Enter') doAdd(); };
+  });
+
+  // Wire done (checkbox) buttons
+  wrap.querySelectorAll('[data-pa-done]').forEach(cb => {
+    cb.onchange = () => {
+      if (!cb.checked) return;
+      const id = cb.dataset.paDone;
+      const section = cb.dataset.paSection;
+      paInit();
+      const idx = DB.pendingActions[section].findIndex(x => x.id === id);
+      if (idx === -1) return;
+      const [item] = DB.pendingActions[section].splice(idx, 1);
+      item.doneAt = new Date().toISOString();
+      item.doneBy = Cloud && Cloud.currentUser ? (Cloud.currentUser.displayName || Cloud.currentUser.email || '').split('@')[0] : 'User';
+      DB.pendingActions.COMPLETED.unshift(item); // newest at top
+      saveDB(); paRender();
+      toast(`Moved to Completed`);
+    };
+  });
+
+  // Wire delete buttons
+  wrap.querySelectorAll('[data-pa-delete]').forEach(btn => {
+    btn.onclick = () => {
+      if (!confirm('Permanently delete this item?')) return;
+      const id = btn.dataset.paDelete;
+      const section = btn.dataset.paSection;
+      paInit();
+      DB.pendingActions[section] = DB.pendingActions[section].filter(x => x.id !== id);
+      saveDB(); paRender();
+    };
+  });
+}
+
+// Hook into realtime: when workspace changes, re-render if Pending Actions is open
+const _origHandleWorkspaceChange = typeof handleWorkspaceChange !== 'undefined' ? handleWorkspaceChange : null;

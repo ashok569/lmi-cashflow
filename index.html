@@ -1,4 +1,4 @@
-<!-- LMI Cashflow Manager — index.html — VERSION 2.1.2 -->
+<!-- LMI Cashflow Manager — index.html — VERSION 2.2.1 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -580,6 +580,24 @@
 <!-- ============ MODALS ============ -->
 <div id="modalRoot"></div>
 <div class="toast" id="toast"></div>
+
+<!-- ============ PENDING ACTIONS OVERLAY ============ -->
+<div id="pendingActionsOverlay" style="display:none; position:fixed; inset:0; background:var(--paper); z-index:80; overflow-y:auto;">
+  <div style="max-width:1300px; margin:0 auto; padding:22px 22px 80px 22px;">
+
+    <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:20px; padding-bottom:14px; border-bottom:2px solid var(--gold);">
+      <div>
+        <h2 style="font-family:var(--serif); font-size:22px; color:var(--navy); margin:0;">&#9654; Pending Actions</h2>
+        <span style="font-size:12px; color:var(--ink-soft);">Shared across all users &middot; updates live</span>
+      </div>
+      <button class="btn" id="pa-close-btn">&#10005; Close</button>
+    </div>
+
+    <div style="display:grid; grid-template-columns:1fr 1fr 1fr 1fr; gap:16px;" id="pa-columns">
+      <!-- Rendered by JS -->
+    </div>
+  </div>
+</div>
 
 <!-- ============ SCENARIO PLANNER OVERLAY ============ -->
 <div id="scenarioOverlay" style="display:none; position:fixed; inset:0; background:var(--paper); z-index:80; overflow-y:auto;">

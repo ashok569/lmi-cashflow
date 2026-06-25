@@ -1,5 +1,5 @@
 /* ===========================================================
-   LMI Cashflow Manager — Supabase sync layer  VERSION 2.1.2
+   LMI Cashflow Manager — Supabase sync layer  VERSION 2.2.1
    Handles auth, cloud load/save, and realtime multi-device sync.
    Loaded BEFORE app.js. Exposes window.Cloud.
    =========================================================== */
@@ -98,6 +98,7 @@ async function cloudLoadAll() {
     bankGuarantees: (ws && ws.bank_guarantees) || [],
     standardVendors: (ws && ws.standard_vendors) || [],
     recurringTemplate: (ws && ws.recurring_template) || [],
+    pendingActions: (ws && ws.pending_actions) || { NIRALI: [], ASHOK: [], SANDEEP: [], COMPLETED: [] },
     currentFY: (ws && ws.current_fy) || '26-27',
     selectedMonth: null,
     _workspaceId: ws && ws.id,
@@ -176,6 +177,7 @@ async function flushCloudSave() {
         bank_guarantees: DB.bankGuarantees,
         standard_vendors: DB.standardVendors,
         recurring_template: DB.recurringTemplate,
+        pending_actions: DB.pendingActions || {},
         current_fy: DB.currentFY,
         updated_at: new Date().toISOString(),
         updated_by: currentUserLabel(),
@@ -226,8 +228,14 @@ function handleWorkspaceChange(payload) {
   DB.bankGuarantees = row.bank_guarantees || [];
   DB.standardVendors = row.standard_vendors || [];
   DB.recurringTemplate = row.recurring_template || [];
+  DB.pendingActions = row.pending_actions || { NIRALI: [], ASHOK: [], SANDEEP: [], COMPLETED: [] };
   DB.currentFY = row.current_fy || DB.currentFY;
   renderAll();
+  // If Pending Actions board is open, re-render it too
+  if (document.getElementById('pendingActionsOverlay') &&
+      document.getElementById('pendingActionsOverlay').style.display !== 'none') {
+    if (typeof paRender === 'function') paRender();
+  }
   setSyncStatus('synced');
 }
 

@@ -1,5 +1,8 @@
 /* ===========================================================
    LMI Cashflow Manager — application logic
+   VERSION 2.2.2 — fix: carried receivables auto-promote to
+   editable entries when their month becomes current (month
+   rollover unlocks locked b/f items automatically on load).
    VERSION 2.2.1 — adds: Pending Actions board (shared task
    list with sections per team member, done/delete, realtime),
    opening balance Reset-to-auto button.
@@ -231,7 +234,7 @@ function syncCarriedReceivables() {
 
   // Re-insert carried entries for every today-month receivable with balance > 0
   todayMonth.receivables
-    .filter(r => (Number(r.amount) || 0) > 0)
+    .filter(r => !r._carriedFrom && (Number(r.amount) || 0) > 0)
     .forEach(r => {
       nextMonth.receivables.push({
         id: 'carried_' + r.id,   // stable ID derived from source so we can find it
@@ -241,6 +244,30 @@ function syncCarriedReceivables() {
         _sourceId: r.id,
       });
     });
+}
+
+// When a month rolls over (e.g. today is now July but July still has _carriedFrom
+// entries from June), promote those carried entries to real editable receivables
+// so they can be actioned (payment received, edit, delete) in the current month.
+function promoteCarriedReceivables() {
+  const todayMk = todayMonthKey();
+  const todayMonth = DB.months[todayMk];
+  if (!todayMonth) return;
+
+  let changed = false;
+  todayMonth.receivables = todayMonth.receivables.map(r => {
+    if (!r._carriedFrom) return r; // already a real entry
+    // This entry was carried from a prior month — now that we're IN this month,
+    // promote it to a proper editable receivable by removing the carried flags.
+    changed = true;
+    const { _carriedFrom, _sourceId, ...rest } = r;
+    // Give it a real ID if it still has the 'carried_' prefix
+    return { ...rest, id: rest.id.startsWith('carried_') ? uid() : rest.id };
+  });
+
+  if (changed) {
+    saveDB([todayMk]);
+  }
 }
 
 /* ===========================================================
@@ -1520,6 +1547,7 @@ function init() {
   ensureMonthExists(DB.selectedMonth);
   ensureMonthlyProvisions(DB.selectedMonth);
   recalcTDSRollup(prevMonthKey(DB.selectedMonth));
+  promoteCarriedReceivables(); // unlock carried entries now that their month is current
   syncCarriedReceivables();
   saveDB([nextMonthKey(todayMonthKey())]);
   wireActionBar();
@@ -1545,6 +1573,7 @@ async function startApp() {
       ensureMonthExists(DB.selectedMonth);
       ensureMonthlyProvisions(DB.selectedMonth);
       recalcTDSRollup(prevMonthKey(DB.selectedMonth));
+      promoteCarriedReceivables(); // unlock carried entries now that their month is current
       syncCarriedReceivables();
       saveDB([prevMonthKey(DB.selectedMonth), nextMonthKey(todayMonthKey())]);
       Cloud.startRealtime();

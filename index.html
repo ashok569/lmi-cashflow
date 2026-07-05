@@ -1,4 +1,4 @@
-<!-- LMI Cashflow Manager — index.html — VERSION 2.3.1 -->
+<!-- LMI Cashflow Manager — index.html — VERSION 2.3.6 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -528,7 +528,9 @@
 
     <div class="action-bar">
       <button class="btn btn-primary" data-action="addInvoice">+ Add Pr. Invoice</button>
+      <button class="btn btn-primary" data-action="generatePI">&#128196; Generate PI</button>
       <button class="btn btn-primary" data-action="paymentReceived">Payment received</button>
+      <button class="btn" data-action="generateTI">&#128196; Generate TI</button>
       <button class="btn" data-action="generalPayment">+ General payment</button>
       <button class="btn" data-action="schedulePayment">Schedule payment</button>
       <button class="btn" data-action="scheduleStandard">Schedule standard payment</button>
@@ -1785,6 +1787,7 @@
 </script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/docx@8.5.0/build/index.umd.js"></script>
 <script src="sync.js"></script>
 <script src="app.js"></script>
 </body>

@@ -1,5 +1,5 @@
 /* ===========================================================
-   LMI Cashflow Manager — Supabase sync layer  VERSION 2.2.1
+   LMI Cashflow Manager — Supabase sync layer  VERSION 2.3.1
    Handles auth, cloud load/save, and realtime multi-device sync.
    Loaded BEFORE app.js. Exposes window.Cloud.
    =========================================================== */
@@ -99,6 +99,7 @@ async function cloudLoadAll() {
     standardVendors: (ws && ws.standard_vendors) || [],
     recurringTemplate: (ws && ws.recurring_template) || [],
     pendingActions: (ws && ws.pending_actions) || { NIRALI: [], ASHOK: [], SANDEEP: [], COMPLETED: [] },
+    invoicing: (ws && ws.invoicing) || null,
     currentFY: (ws && ws.current_fy) || '26-27',
     selectedMonth: null,
     _workspaceId: ws && ws.id,
@@ -178,6 +179,7 @@ async function flushCloudSave() {
         standard_vendors: DB.standardVendors,
         recurring_template: DB.recurringTemplate,
         pending_actions: DB.pendingActions || {},
+        invoicing: DB.invoicing || null,
         current_fy: DB.currentFY,
         updated_at: new Date().toISOString(),
         updated_by: currentUserLabel(),
@@ -229,6 +231,7 @@ function handleWorkspaceChange(payload) {
   DB.standardVendors = row.standard_vendors || [];
   DB.recurringTemplate = row.recurring_template || [];
   DB.pendingActions = row.pending_actions || { NIRALI: [], ASHOK: [], SANDEEP: [], COMPLETED: [] };
+  if (row.invoicing) DB.invoicing = row.invoicing;
   DB.currentFY = row.current_fy || DB.currentFY;
   renderAll();
   // If Pending Actions board is open, re-render it too

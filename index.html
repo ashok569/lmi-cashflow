@@ -1,4 +1,4 @@
-<!-- LMI Cashflow Manager — index.html — VERSION 2.2.1 -->
+<!-- LMI Cashflow Manager — index.html — VERSION 2.3.1 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -411,6 +411,12 @@
 <!-- ============ MAIN APP ============ -->
 <div id="mainApp" style="display:none;">
 
+<!-- Test mode banner — hidden by default -->
+<div id="testModeBanner" style="display:none; background:#a4302a; color:#fff; text-align:center; padding:8px 20px; font-size:13px; font-weight:600; letter-spacing:.04em; position:sticky; top:0; z-index:70;">
+  &#9888; TEST MODE ACTIVE — Changes here will not affect your live data &nbsp;&nbsp;
+  <button id="btnUndoTest" style="background:rgba(255,255,255,.2); border:1px solid rgba(255,255,255,.4); color:#fff; padding:4px 14px; border-radius:4px; cursor:pointer; font-size:12px; font-weight:700; margin-left:12px;">&#8617; UNDO TEST &amp; RESTORE</button>
+</div>
+
 <div class="topbar">
   <div class="topbar-inner">
     <div class="brand">
@@ -427,6 +433,7 @@
         <button class="icon-btn" id="btnAddUser" title="Add user">&#128100;</button>
         <button class="icon-btn" id="btnExport" title="Backup (download JSON)">&#8681;</button>
         <button class="icon-btn" id="btnImport" title="Restore from backup">&#8679;</button>
+        <button class="icon-btn" id="btnTestMode" title="Test mode" style="font-size:11px; font-weight:700; width:auto; padding:0 8px; letter-spacing:.03em;">TEST</button>
         <button class="icon-btn" id="btnSignOut" title="Sign out">&#9211;</button>
         <input type="file" id="fileImport" accept="application/json" style="display:none;">
       </div>
@@ -659,6 +666,45 @@
       </div>
 
     </div>
+  </div>
+</div>
+
+<!-- ============ INVOICING MODULE OVERLAY ============ -->
+<div id="invoicingOverlay" style="display:none; position:fixed; inset:0; background:var(--paper); z-index:80; overflow-y:auto;">
+  <div style="max-width:1300px; margin:0 auto; padding:22px 22px 80px 22px;">
+
+    <!-- Header -->
+    <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:20px; padding-bottom:14px; border-bottom:2px solid var(--gold);">
+      <div>
+        <h2 style="font-family:var(--serif); font-size:22px; color:var(--navy); margin:0;">&#128196; Invoicing</h2>
+        <span id="inv-fy-label" style="font-size:12px; color:var(--ink-soft);">Goru Training Pvt. Ltd.</span>
+      </div>
+      <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
+        <button class="btn" id="inv-btn-clients">&#128100; Clients</button>
+        <button class="btn" id="inv-btn-startnums">&#35; Start numbers</button>
+        <button class="btn btn-primary" id="inv-btn-new-pi">+ New PI</button>
+        <button class="btn btn-primary" id="inv-btn-new-ti">+ New TI</button>
+        <button class="btn" id="inv-btn-report">&#128202; Report</button>
+        <button class="btn" id="inv-close-btn">&#10005; Close</button>
+      </div>
+    </div>
+
+    <!-- Invoice register tabs -->
+    <div style="display:flex; gap:0; margin-bottom:16px; border-bottom:2px solid var(--line);">
+      <button class="inv-reg-tab active" data-tab="pi" style="padding:9px 20px; border:none; background:none; font-family:var(--sans); font-size:13px; font-weight:600; cursor:pointer; border-bottom:2px solid var(--navy); margin-bottom:-2px; color:var(--navy);">Proforma Invoices</button>
+      <button class="inv-reg-tab" data-tab="ti" style="padding:9px 20px; border:none; background:none; font-family:var(--sans); font-size:13px; font-weight:600; cursor:pointer; color:var(--ink-soft);">Tax Invoices</button>
+    </div>
+
+    <!-- Register table -->
+    <div class="panel">
+      <div class="panel-body" style="padding:0;">
+        <table class="simple" id="inv-register-table" style="width:100%;">
+          <thead id="inv-register-head"></thead>
+          <tbody id="inv-register-body"></tbody>
+        </table>
+      </div>
+    </div>
+
   </div>
 </div>
 
@@ -1738,6 +1784,7 @@
   window.__SUPABASE_ANON_KEY__ = 'sb_publishable_6sItNz511-fMTitJFyPPQw_5DHK22vn';
 </script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <script src="sync.js"></script>
 <script src="app.js"></script>
 </body>

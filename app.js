@@ -1,8 +1,10 @@
 /* ===========================================================
    LMI Cashflow Manager — application logic
-   VERSION 2.2.2 — fix: carried receivables auto-promote to
-   editable entries when their month becomes current (month
-   rollover unlocks locked b/f items automatically on load).
+   VERSION 2.3.1 — adds: Test Mode (snapshot/restore), PDF
+   generation (jsPDF), improved Email modal with Gmail link,
+   delete client confirmed wired, all client fields verified.
+   VERSION 2.3.0 — adds: Invoicing module (PI/TI generation,
+   client master, Excel export, cashflow integration, reports).
    VERSION 2.2.1 — adds: Pending Actions board (shared task
    list with sections per team member, done/delete, realtime),
    opening balance Reset-to-auto button.
@@ -360,17 +362,21 @@ function renderMonthTabs() {
   const tmk = todayMonthKey();
   const isPendingOpen = document.getElementById('pendingActionsOverlay') &&
     document.getElementById('pendingActionsOverlay').style.display !== 'none';
+  const isInvoicingOpen = document.getElementById('invoicingOverlay') &&
+    document.getElementById('invoicingOverlay').style.display !== 'none';
   wrap.innerHTML = months.map(mk => {
-    const active = (mk === DB.selectedMonth && !isPendingOpen) ? 'active' : '';
+    const active = (mk === DB.selectedMonth && !isPendingOpen && !isInvoicingOpen) ? 'active' : '';
     const isCurrent = mk === tmk ? 'is-current' : '';
     const hasData = !!DB.months[mk];
     return `<button class="month-tab ${active} ${isCurrent} ${hasData ? '' : 'future'}" data-mk="${mk}">${monthLabel(mk)}${isCurrent ? '<span class="dot"></span>' : ''}</button>`;
   }).join('') +
-  `<button class="month-tab ${isPendingOpen ? 'active' : ''}" id="pendingActionsTab" style="border-left:2px solid rgba(255,255,255,.15); margin-left:8px;">&#9654; Pending actions</button>`;
+  `<button class="month-tab ${isPendingOpen ? 'active' : ''}" id="pendingActionsTab" style="border-left:2px solid rgba(255,255,255,.15); margin-left:8px;">&#9654; Pending actions</button>` +
+  `<button class="month-tab ${isInvoicingOpen ? 'active' : ''}" id="invoicingTab" style="border-left:1px solid rgba(255,255,255,.1); margin-left:4px;">&#128196; Invoicing</button>`;
 
   wrap.querySelectorAll('.month-tab[data-mk]').forEach(btn => {
     btn.onclick = () => {
       closePendingActions();
+      closeInvoicingModule();
       const touched = selectMonth(btn.dataset.mk);
       saveDB(touched);
       renderAll();
@@ -378,6 +384,8 @@ function renderMonthTabs() {
   });
   const paTab = document.getElementById('pendingActionsTab');
   if (paTab) paTab.onclick = openPendingActions;
+  const invTab = document.getElementById('invoicingTab');
+  if (invTab) invTab.onclick = openInvoicingModule;
 }
 
 function renderDashboard() {
@@ -1520,6 +1528,8 @@ function wireStaticButtons() {
     if (e.target.files[0]) importBackup(e.target.files[0]);
     e.target.value = '';
   };
+  document.getElementById('btnTestMode').onclick = activateTestMode;
+  document.getElementById('btnUndoTest').onclick = undoTestMode;
   const addUserBtn = document.getElementById('btnAddUser');
   const signOutBtn = document.getElementById('btnSignOut');
   if (window.Cloud && Cloud.cloudConfigured()) {
@@ -1552,6 +1562,7 @@ function init() {
   saveDB([nextMonthKey(todayMonthKey())]);
   wireActionBar();
   wireStaticButtons();
+  restoreTestModeIfActive();
   renderAll();
 }
 
@@ -1585,6 +1596,7 @@ async function startApp() {
     }
     wireActionBar();
     wireStaticButtons();
+    restoreTestModeIfActive();
     renderAll();
   } else {
     init();
@@ -2211,3 +2223,1187 @@ function paRender() {
 
 // Hook into realtime: when workspace changes, re-render if Pending Actions is open
 const _origHandleWorkspaceChange = typeof handleWorkspaceChange !== 'undefined' ? handleWorkspaceChange : null;
+
+/* ===========================================================
+   INVOICING MODULE  v2.3.0
+   PI/TI generation, client master, Excel export, cashflow
+   integration. Data stored in DB.invoicing (workspace-level).
+   =========================================================== */
+
+// ── Constants ──────────────────────────────────────────────
+const GORU = {
+  name: 'GORU TRAINING PRIVATE LIMITED',
+  addr1: 'No 1108, Floor No 11th, Sureshwari\nTechno IT Park Premises,',
+  addr2: 'Link Road, Near Eskay Resorts, Borivali\n400092 Mumbai',
+  state: 'Maharashtra',
+  gstin: '27AAGCG2703D1Z2',
+  pan: 'AAGCG2703D',
+  tan: 'MUMG18684B',
+  bank: 'HDFC Bank',
+  branch: 'Churchgate, Mumbai 400020',
+  acno: '50200048157133',
+  ifsc: 'HDFC0000501',
+};
+
+// ── Data initialisation ────────────────────────────────────
+function invInit() {
+  if (!DB.invoicing) {
+    DB.invoicing = {
+      clients: [],
+      piSequence: {},   // { '26-27': 0 }
+      tiSequence: {},
+      proformas: [],    // PI records
+      taxInvoices: [],  // TI records
+    };
+  }
+  if (!DB.invoicing.clients) DB.invoicing.clients = [];
+  if (!DB.invoicing.piSequence) DB.invoicing.piSequence = {};
+  if (!DB.invoicing.tiSequence) DB.invoicing.tiSequence = {};
+  if (!DB.invoicing.proformas) DB.invoicing.proformas = [];
+  if (!DB.invoicing.taxInvoices) DB.invoicing.taxInvoices = [];
+}
+
+function currentInvFY() {
+  return DB.currentFY || '26-27';
+}
+
+function nextPINumber() {
+  const fy = currentInvFY();
+  const n = (DB.invoicing.piSequence[fy] || 0) + 1;
+  DB.invoicing.piSequence[fy] = n;
+  return `PI/${fy}/${String(n).padStart(3, '0')}`;
+}
+
+function nextTINumber() {
+  const fy = currentInvFY();
+  const n = (DB.invoicing.tiSequence[fy] || 0) + 1;
+  DB.invoicing.tiSequence[fy] = n;
+  return `TI/${fy}/${String(n).padStart(3, '0')}`;
+}
+
+function gstType(clientState) {
+  if (!clientState) return 'igst';
+  return clientState.trim().toLowerCase() === 'maharashtra' ? 'intra' : 'igst';
+}
+
+// ── Open / Close ───────────────────────────────────────────
+let INV_TAB = 'pi'; // 'pi' or 'ti'
+
+function openInvoicingModule() {
+  invInit();
+  document.getElementById('invoicingOverlay').style.display = 'block';
+  document.body.style.overflow = 'hidden';
+  document.getElementById('inv-fy-label').textContent =
+    `Goru Training Pvt. Ltd. · FY ${currentInvFY()}`;
+  invWireButtons();
+  invRenderRegister();
+}
+
+function closeInvoicingModule() {
+  document.getElementById('invoicingOverlay').style.display = 'none';
+  document.body.style.overflow = '';
+  renderMonthTabs();
+}
+
+function invWireButtons() {
+  document.getElementById('inv-close-btn').onclick = closeInvoicingModule;
+  document.getElementById('inv-btn-clients').onclick = invOpenClients;
+  document.getElementById('inv-btn-startnums').onclick = invOpenStartNumbers;
+  document.getElementById('inv-btn-new-pi').onclick = () => invOpenPIForm();
+  document.getElementById('inv-btn-new-ti').onclick = () => invOpenTIForm();
+  document.getElementById('inv-btn-report').onclick = invOpenReport;
+  document.querySelectorAll('.inv-reg-tab').forEach(tab => {
+    tab.onclick = () => {
+      INV_TAB = tab.dataset.tab;
+      document.querySelectorAll('.inv-reg-tab').forEach(t => {
+        t.style.borderBottom = t === tab ? '2px solid var(--navy)' : 'none';
+        t.style.color = t === tab ? 'var(--navy)' : 'var(--ink-soft)';
+      });
+      invRenderRegister();
+    };
+  });
+}
+
+// ── Register table ─────────────────────────────────────────
+function invRenderRegister() {
+  invInit();
+  const isPi = INV_TAB === 'pi';
+  const list = isPi ? DB.invoicing.proformas : DB.invoicing.taxInvoices;
+  const fy = currentInvFY();
+  const fyList = list.filter(inv => inv.invNo.includes(fy)).reverse();
+
+  const head = document.getElementById('inv-register-head');
+  const body = document.getElementById('inv-register-body');
+
+  head.innerHTML = `<tr>
+    <th>Invoice No</th><th>Date</th><th>Client</th>
+    <th>Description</th><th style="text-align:right;">Gross (₹)</th>
+    <th>Status</th><th style="text-align:center;">Actions</th>
+  </tr>`;
+
+  if (!fyList.length) {
+    body.innerHTML = `<tr><td colspan="7" class="empty-note" style="padding:20px; text-align:center;">No ${isPi ? 'Proforma' : 'Tax'} invoices for FY ${fy} yet.</td></tr>`;
+    return;
+  }
+
+  const statusColor = { draft: '#9a6b14', sent: '#1e4f8a', paid: '#1f7a4d', cancelled: '#a4302a', converted: '#5b6470' };
+
+  body.innerHTML = fyList.map(inv => `
+    <tr style="font-size:13px;">
+      <td style="font-family:var(--mono); font-weight:600;">${escapeHtml(inv.invNo)}</td>
+      <td>${inv.date || ''}</td>
+      <td>${escapeHtml(inv.clientName || '')}</td>
+      <td style="max-width:220px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${escapeHtml(inv.desc || '')}</td>
+      <td style="font-family:var(--mono); text-align:right;">${fmtMoney(inv.gross || 0)}</td>
+      <td><span class="badge" style="background:${statusColor[inv.status] || '#ddd'}22; color:${statusColor[inv.status] || '#666'};">${(inv.status || 'draft').toUpperCase()}</span></td>
+      <td style="text-align:center;">
+        <span class="row-actions" style="justify-content:center;">
+          ${inv.status !== 'cancelled' && inv.status !== 'converted' ? `<button data-inv-edit="${inv.id}" data-inv-type="${isPi ? 'pi' : 'ti'}" title="Edit">&#9998;</button>` : ''}
+          ${isPi && inv.status !== 'cancelled' && inv.status !== 'converted' ? `<button data-inv-to-ti="${inv.id}" title="Convert to TI">&#8594;TI</button>` : ''}
+          <button data-inv-excel="${inv.id}" data-inv-type="${isPi ? 'pi' : 'ti'}" title="Download Excel">&#128229;</button>
+          <button data-inv-email="${inv.id}" data-inv-type="${isPi ? 'pi' : 'ti'}" title="Email">&#9993;</button>
+          ${inv.status !== 'cancelled' && inv.status !== 'converted' ? `<button data-inv-del="${inv.id}" data-inv-type="${isPi ? 'pi' : 'ti'}" title="Cancel/Delete" style="color:var(--red);">&#10005;</button>` : ''}
+        </span>
+      </td>
+    </tr>`).join('');
+
+  body.querySelectorAll('[data-inv-edit]').forEach(b =>
+    b.onclick = () => b.dataset.invType === 'pi'
+      ? invOpenPIForm(b.dataset.invEdit)
+      : invOpenTIForm(null, b.dataset.invEdit));
+  body.querySelectorAll('[data-inv-to-ti]').forEach(b =>
+    b.onclick = () => invOpenTIForm(b.dataset.invToTi));
+  body.querySelectorAll('[data-inv-excel]').forEach(b =>
+    b.onclick = () => invDownloadExcel(b.dataset.invExcel, b.dataset.invType));
+  body.querySelectorAll('[data-inv-email]').forEach(b =>
+    b.onclick = () => invEmail(b.dataset.invEmail, b.dataset.invType));
+  body.querySelectorAll('[data-inv-del]').forEach(b =>
+    b.onclick = () => invCancel(b.dataset.invDel, b.dataset.invType));
+}
+
+// ── Client management ──────────────────────────────────────
+function invOpenClients() {
+  invInit();
+  const clients = DB.invoicing.clients;
+  const body = `
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+      <span style="font-size:12.5px; color:var(--ink-soft);">${clients.length} client${clients.length !== 1 ? 's' : ''} on file</span>
+      <button class="btn btn-sm btn-primary" id="cl-add">+ Add client</button>
+    </div>
+    <div style="max-height:420px; overflow-y:auto; border:1px solid var(--line); border-radius:6px;">
+      ${clients.length ? clients.map(c => `
+        <div style="display:flex; justify-content:space-between; align-items:center; padding:10px 14px; border-bottom:1px solid #eef0f2; font-size:13px;">
+          <div>
+            <div style="font-weight:600;">${escapeHtml(c.shortName)} — ${escapeHtml(c.companyName)}</div>
+            <div style="font-size:11.5px; color:var(--ink-soft);">${escapeHtml(c.state || '')} · ${escapeHtml(c.gstin || 'No GSTIN')}</div>
+          </div>
+          <span class="row-actions">
+            <button data-cl-edit="${c.id}" title="Edit">&#9998;</button>
+            <button data-cl-del="${c.id}" title="Delete" style="color:var(--red);">&#10005;</button>
+          </span>
+        </div>`).join('') : '<div class="empty-note" style="padding:20px;">No clients yet. Click + Add client to import from the bundled list or add manually.</div>'}
+    </div>`;
+
+  openModal('Client master', body, `
+    <button class="btn" id="cl-import">&#8659; Import bundled list</button>
+    <button class="btn" id="cl-close">Close</button>`);
+
+  document.getElementById('cl-close').onclick = closeModal;
+  document.getElementById('cl-add').onclick = () => invOpenClientForm();
+  document.getElementById('cl-import').onclick = invImportBundledClients;
+  document.querySelectorAll('[data-cl-edit]').forEach(b =>
+    b.onclick = () => invOpenClientForm(b.dataset.clEdit));
+  document.querySelectorAll('[data-cl-del]').forEach(b => {
+    b.onclick = () => {
+      if (!confirm('Delete this client?')) return;
+      DB.invoicing.clients = DB.invoicing.clients.filter(c => c.id !== b.dataset.clDel);
+      saveDB(); invOpenClients();
+    };
+  });
+}
+
+function invOpenClientForm(clientId) {
+  invInit();
+  const existing = clientId ? DB.invoicing.clients.find(c => c.id === clientId) : null;
+  const v = existing || {};
+  const body = `
+    <div class="field-row">
+      <div class="field"><label>Short name</label><input id="cf-short" value="${escapeHtml(v.shortName||'')}"></div>
+      <div class="field"><label>State</label><input id="cf-state" value="${escapeHtml(v.state||'')}"></div>
+    </div>
+    <div class="field"><label>Company name</label><input id="cf-company" value="${escapeHtml(v.companyName||'')}"></div>
+    <div class="field"><label>Address line 1</label><input id="cf-addr1" value="${escapeHtml(v.addr1||'')}"></div>
+    <div class="field"><label>Address line 2</label><input id="cf-addr2" value="${escapeHtml(v.addr2||'')}"></div>
+    <div class="field"><label>Address line 3</label><input id="cf-addr3" value="${escapeHtml(v.addr3||'')}"></div>
+    <div class="field-row">
+      <div class="field"><label>GSTIN</label><input id="cf-gstin" value="${escapeHtml(v.gstin||'')}"></div>
+      <div class="field"><label>PAN</label><input id="cf-pan" value="${escapeHtml(v.pan||'')}"></div>
+    </div>
+    <div class="field-row">
+      <div class="field"><label>TAN</label><input id="cf-tan" value="${escapeHtml(v.tan||'')}"></div>
+      <div class="field"><label>Kind Attn</label><input id="cf-attn" value="${escapeHtml(v.attn||'')}"></div>
+    </div>
+    <div class="field-row">
+      <div class="field"><label>Mobile</label><input id="cf-mobile" value="${escapeHtml(v.mobile||'')}"></div>
+      <div class="field"><label>Email</label><input id="cf-email" value="${escapeHtml(v.email||'')}"></div>
+    </div>`;
+  openModal(existing ? 'Edit client' : 'Add client', body,
+    `<button class="btn" id="cf-cancel">Cancel</button><button class="btn btn-primary" id="cf-save">Save</button>`);
+  document.getElementById('cf-cancel').onclick = () => { closeModal(); invOpenClients(); };
+  document.getElementById('cf-save').onclick = () => {
+    const get = id => document.getElementById(id).value.trim();
+    const data = {
+      id: existing ? existing.id : uid(),
+      shortName: get('cf-short'), companyName: get('cf-company'),
+      addr1: get('cf-addr1'), addr2: get('cf-addr2'), addr3: get('cf-addr3'),
+      state: get('cf-state'), gstin: get('cf-gstin'), pan: get('cf-pan'),
+      tan: get('cf-tan'), attn: get('cf-attn'), mobile: get('cf-mobile'), email: get('cf-email'),
+    };
+    if (!data.shortName) { toast('Short name is required'); return; }
+    if (existing) {
+      Object.assign(existing, data);
+    } else {
+      DB.invoicing.clients.push(data);
+    }
+    saveDB(); closeModal(); invOpenClients();
+    toast(`Client ${data.shortName} saved`);
+  };
+}
+
+// Bundled client list from the uploaded licensee details
+const BUNDLED_CLIENTS = [
+  {shortName:'AMEEN',companyName:'THE BOTTOM LINE LEADERSHIP CONSULTING LLP',addr1:'84-G, DASTOOR BLOCKS, NAIGAUM CROSS ROAD,',addr2:'DADAR, MUMBAI 400014',addr3:'',state:'Maharashtra',gstin:'27AAIFT9075C1ZW',pan:'AAIFT9075C',tan:'',attn:'Ameen Merchant',mobile:'9820987775',email:'ameenmerchant7@gmail.com'},
+  {shortName:'ANIL',companyName:'ANIL JHINGAN',addr1:'116, Malviya Nagar,',addr2:'Bhopal, Madhya Pradesh - 462003',addr3:'',state:'Madhya Pradesh',gstin:'23ACUPJ5185F2ZB',pan:'ACUPJ5185F',tan:'',attn:'Anil Jhingan',mobile:'9826255067',email:'jhingan.anil@gmail.com'},
+  {shortName:'ANUPAMA',companyName:'ANUPAMA SRIVASTAVA',addr1:'C002, Salarpuria Sattva Gold Summit,',addr2:'Doddagubbi, Kothanur',addr3:'Bengaluru - 560077',state:'Karnataka',gstin:'',pan:'ASSPS8483R',tan:'',attn:'Anupama Srivastava',mobile:'9845954450',email:'srivastavaanupamar@gmail.com'},
+  {shortName:'ARYAN',companyName:'GRIT UNLIMITED',addr1:'103, Adarsh Society, Kalinga',addr2:'Athwa lines, Surat - 395001',addr3:'',state:'Gujarat',gstin:'24DUSPB4176H1ZF',pan:'DUSPB4176H',tan:'',attn:'Aryan Naidu',mobile:'9824102318',email:'baryannaidu@gmail.com'},
+  {shortName:'ANAND',companyName:'LEADERS LEAGUE',addr1:'103, Adarsh Society,',addr2:'Athwa lines, Surat - 395002',addr3:'',state:'Gujarat',gstin:'24ABBPN3317M1ZQ',pan:'ABBPN3317M',tan:'SRTA02534A',attn:'B. Anand Naidu',mobile:'9824133238',email:'b.anandnaidu@gmail.com'},
+  {shortName:'BHAGYASHRI',companyName:'BHAGYASHRI NEELESH VARTAK',addr1:'B-1502, Adney 2, Holy cross Road, Near SBI Bank,',addr2:'I.C.Colony, Borivali West, Mumbai 400103',addr3:'',state:'Maharashtra',gstin:'',pan:'AMAPR9005Q',tan:'',attn:'Bhagyashri Vartak',mobile:'9967662274',email:'bhagyashrinv@gmail.com'},
+  {shortName:'BHAVIN',companyName:'M/S IRA ENTERPRISE',addr1:'100, MAHASUKHNAGAR SOCIETY, NR. NOBEL SCHOOL,',addr2:'ON PARSHWANATH HARIVILLA ROAD, KRISHNANAGAR,',addr3:'PO: SAIJPUR BOGHA, AHMEDABAD - 382345',state:'Gujarat',gstin:'24HGUPS5996A1ZL',pan:'HGUPS5996A',tan:'',attn:'Bhavin Soni',mobile:'9824650620',email:'bnsoni1975@yahoo.com'},
+  {shortName:'MAHESH',companyName:'BRIDGE PEOPLE TECHNOLOGY SOLUTIONS PVT LTD',addr1:'Unit 3F04, Tower F, Century Central,',addr2:'Konanakunte Cross, Kanakapura Main Road,',addr3:'Bangalore - 560062',state:'Karnataka',gstin:'29AAFCB0486R1ZZ',pan:'AAFCB0486R',tan:'',attn:'C. N. Mahesh',mobile:'8431318575',email:'mahesh@grorgconsulting.in'},
+  {shortName:'DEBASIS',companyName:'CBE LEARNING PVT LTD.',addr1:'320, Block 1B, 73 East Avenue, Genda Circle,',addr2:'Bhailal Amin Marg, Vadodara - 390017',addr3:'',state:'Gujarat',gstin:'24AAICC5630M1ZJ',pan:'AAICC5630M',tan:'',attn:'Debasis Majumdar',mobile:'9687044466',email:'debasis@sixsigmaconcept.com'},
+  {shortName:'DEEPAK',companyName:'CEE EM EXPORTS PVT LTD',addr1:'512 Deepshikha Building,',addr2:'8 Rajendra Place,',addr3:'New Delhi-110008',state:'Delhi',gstin:'07AAACC0992L1ZI',pan:'AAACC0992L',tan:'',attn:'Deepak Talwar',mobile:'8810241176',email:'talwardeepak478@gmail.com'},
+  {shortName:'DIPANKAR',companyName:'SEEKGROWTH LEARNING SOLUTIONS',addr1:'Pocket 40 / House No. 99 (Basement),',addr2:'Chittaranjan Park,',addr3:'New Delhi 110019',state:'Delhi',gstin:'07AGGPD9121P1Z5',pan:'AGGPD9121P',tan:'',attn:'Dipankar Das',mobile:'9811500184',email:'sirdipankar@gmail.com'},
+  {shortName:'DILIP',companyName:'CARPE DIEM',addr1:'2A Apsaras, No. 1, Sambandam Street',addr2:'Off G. N Chetty Road, T. Nagar, Chennai - 600017',addr3:'',state:'Tamil Nadu',gstin:'33AKHPD1440Q1Z8',pan:'AKHPD1440Q',tan:'CHED08636F',attn:'P. Dilip Krishna',mobile:'9840022248',email:'dilipkrishna@carpediemindia.in'},
+  {shortName:'HARISH',companyName:'HARISH CN',addr1:'B 001, Ground Floor, B Block,',addr2:'Renaissance Park 1, Malleshwaram West,',addr3:'Bangalore - 560055',state:'Karnataka',gstin:'29AACPH2632P1ZH',pan:'AACPH2632P',tan:'',attn:'Harish Closepet',mobile:'9811500184',email:'harishcn1210@gmail.com'},
+  {shortName:'JOHNSON',companyName:'EXCEL TALENT PLUS',addr1:'302, MG Gajapthy Nivas, Plot No.6, Indrapuri Railway Colony,',addr2:'West Marredpally, Secunderabad,',addr3:'Hyderabad-500026',state:'Telangana',gstin:'',pan:'ACTPB6652J',tan:'',attn:'Johnson Baby',mobile:'9490484401',email:'hrjohnsonbaby@gmail.com'},
+  {shortName:'KADAMBARI',companyName:'KADAMBARI DEODHAR',addr1:'Flat no.12, Dar-ul-Khalil,',addr2:'Shahid Bhagatsingh Road,',addr3:'Colaba, Mumbai 400 001',state:'Maharashtra',gstin:'27AEQPD4118L1ZA',pan:'AEQPD4118L',tan:'',attn:'Kadambari Deodhar',mobile:'9820129239',email:'kadambari.deodhar@lmi-india.in'},
+  {shortName:'NARESH',companyName:'NARESH KUMAR RATTAN',addr1:'H.No. 110, Sector 30,',addr2:'Gurugram 122001',addr3:'',state:'Haryana',gstin:'06AACPR5068D1ZS',pan:'AACPR1068D',tan:'',attn:'Naresh Kumar Rattan',mobile:'9878337710',email:'naresh_rattan@yahoo.com'},
+  {shortName:'PAYANK',companyName:'LIFE A SCHOOL OF ATTITUDE AND VALUES PVT LTD',addr1:'120 Fortune Business Hub, Nr Shell Petrol Pump,',addr2:'Science City Road, Ahmedabad - 380060',addr3:'',state:'Gujarat',gstin:'24AADCL8539M1Z1',pan:'AADCL8539M',tan:'',attn:'Payank Patel',mobile:'9904983310',email:'payank.patel140581@gmail.com'},
+  {shortName:'RAVI',companyName:'ALACRITY CONSULTING',addr1:'34, Mangalmurti Krishnaji Nagar,',addr2:'Scheme No. 77, Near Khajrana temple,',addr3:'Indore - 452016',state:'Madhya Pradesh',gstin:'23AIEPG7876N1ZR',pan:'AIEPG7876N',tan:'',attn:'Ravi Gupta',mobile:'9893011073',email:'ravi@lmi-india.in'},
+  {shortName:'SALIL',companyName:'SALIL CHANDRA',addr1:'L-301, Microtek Greenburg',addr2:'Sector 86',addr3:'Gurgaon',state:'Haryana',gstin:'06AENPC9828D1ZG',pan:'AENPC9828D',tan:'',attn:'Salil Chandra',mobile:'9999114183',email:'salil@lmi-india.in'},
+  {shortName:'SUDHIR',companyName:'SUMMIT CONSULTANTS',addr1:'1002 Trishna View CHS, Bhagwan Mahavir Marg,',addr2:'J. B. Nagar, Andheri East, Mumbai 400059',addr3:'',state:'Maharashtra',gstin:'27AABPR2614Q1ZC',pan:'AABPR2614Q',tan:'MUMS82361G',attn:'Sudhir Rao',mobile:'9820282709',email:'rao.ssu@gmail.com'},
+  {shortName:'SUNIL J',companyName:'RE; FORM - TRANSFORM TO THRIVE',addr1:'9011, Garden Villas,',addr2:'DLF phase 4,',addr3:'Gurgaon 122009',state:'Haryana',gstin:'06AAAHS8485D1ZZ',pan:'AAAHS8485D',tan:'',attn:'Sunil Jain',mobile:'9717797744',email:'sunil@lmi-india.in'},
+  {shortName:'SUNIL N',companyName:'GOLDEN SKY VENTURES',addr1:'Plot No. 76, Phase 1, Adithya Homes,',addr2:'Nerige PO, Kamanahalli Village Circle, Sarjapura,',addr3:'Bengaluru- 562125',state:'Karnataka',gstin:'29ADEPN6889M1ZI',pan:'ADEPN6889M',tan:'',attn:'Sunil Nair',mobile:'9972189026',email:'sknglobal@gmail.com'},
+  {shortName:'SUPARNA',companyName:'ENVISAGE TALENT SOLUTIONS PVT LTD',addr1:'B909 Onkar, Shivdham Sankul, Above Axis Bank,',addr2:'Opposite Fire Brigade, Near Oberoi Mall,',addr3:'Malad East, Mumbai 400097',state:'Maharashtra',gstin:'27AACCE4605N1ZI',pan:'AACCE4605N',tan:'',attn:'Suparna Samant',mobile:'9321381326',email:'suparna@lmi-india.in'},
+  {shortName:'VINOD',companyName:'VINOD SETHUMADHAVAN WARRIER',addr1:'B -503, Akruti Aneri, Behind Seven Hills Hospital,',addr2:'Marol Maroshi Road, Marol Andheri (East) Mumbai - 400059',addr3:'',state:'Maharashtra',gstin:'27AAAPW7337E1ZJ',pan:'AAAPW7337E',tan:'',attn:'Vinod Warrier',mobile:'9324060153',email:'vinodswarrier@gmail.com'},
+  {shortName:'ZUBAIR',companyName:'CONSULTZUBAIR PRIVATE LTD.',addr1:'Mandir Bagh, Baghat,',addr2:'Barzulla, Srinagar, India',addr3:'',state:'Jammu & Kashmir',gstin:'',pan:'AALCC4514F',tan:'',attn:'Zubair Iqbal',mobile:'8491999000',email:'zubair.iqball@gmail.com'},
+];
+
+function invImportBundledClients() {
+  invInit();
+  let added = 0;
+  BUNDLED_CLIENTS.forEach(c => {
+    const exists = DB.invoicing.clients.find(x => x.shortName === c.shortName);
+    if (!exists) {
+      DB.invoicing.clients.push({ ...c, id: uid() });
+      added++;
+    }
+  });
+  saveDB();
+  closeModal();
+  invOpenClients();
+  toast(`${added} client${added !== 1 ? 's' : ''} imported`);
+}
+
+// ── Start Numbers ──────────────────────────────────────────
+function invOpenStartNumbers() {
+  invInit();
+  const fy = currentInvFY();
+  const piCurrent = DB.invoicing.piSequence[fy] || 0;
+  const tiCurrent = DB.invoicing.tiSequence[fy] || 0;
+  const body = `
+    <div class="field"><label>Financial year</label>
+      <select id="sn-fy">${['26-27','27-28','28-29','29-30'].map(f =>
+        `<option value="${f}" ${f===fy?'selected':''}>${f}</option>`).join('')}</select>
+    </div>
+    <div class="field-row">
+      <div class="field"><label>PI — next number</label>
+        <input type="number" id="sn-pi" value="${piCurrent + 1}" min="1">
+        <div style="font-size:11px; color:var(--ink-soft); margin-top:4px;">Current last used: ${piCurrent === 0 ? 'none' : `PI/${fy}/${String(piCurrent).padStart(3,'0')}`}</div>
+      </div>
+      <div class="field"><label>TI — next number</label>
+        <input type="number" id="sn-ti" value="${tiCurrent + 1}" min="1">
+        <div style="font-size:11px; color:var(--ink-soft); margin-top:4px;">Current last used: ${tiCurrent === 0 ? 'none' : `TI/${fy}/${String(tiCurrent).padStart(3,'0')}`}</div>
+      </div>
+    </div>
+    <div class="hint">Setting the next number to e.g. 18 means the next invoice generated will be PI/${fy}/018. This does not create any invoices — just sets the counter.</div>`;
+  openModal('Set invoice start numbers', body,
+    `<button class="btn" id="sn-cancel">Cancel</button><button class="btn btn-primary" id="sn-save">Save</button>`);
+  document.getElementById('sn-cancel').onclick = closeModal;
+  document.getElementById('sn-save').onclick = () => {
+    const fy2 = document.getElementById('sn-fy').value;
+    const pi = Math.max(0, (parseInt(document.getElementById('sn-pi').value) || 1) - 1);
+    const ti = Math.max(0, (parseInt(document.getElementById('sn-ti').value) || 1) - 1);
+    DB.invoicing.piSequence[fy2] = pi;
+    DB.invoicing.tiSequence[fy2] = ti;
+    saveDB(); closeModal();
+    toast(`Counters set: next PI will be PI/${fy2}/${String(pi+1).padStart(3,'0')}, next TI will be TI/${fy2}/${String(ti+1).padStart(3,'0')}`);
+  };
+}
+
+// ── Invoice form (PI) ──────────────────────────────────────
+function invOpenPIForm(editId) {
+  invInit();
+  const existing = editId ? DB.invoicing.proformas.find(p => p.id === editId) : null;
+  const v = existing || {};
+  const clients = DB.invoicing.clients;
+  const today = new Date().toISOString().slice(0, 10);
+
+  const body = `
+    <div class="field-row">
+      <div class="field"><label>Client</label>
+        <select id="pf-client">${clients.map(c =>
+          `<option value="${c.id}" ${v.clientId===c.id?'selected':''}>${escapeHtml(c.shortName)} — ${escapeHtml(c.companyName)}</option>`
+        ).join('')}</select>
+      </div>
+      <div class="field"><label>Invoice date</label>
+        <input type="date" id="pf-date" value="${v.date || today}">
+      </div>
+    </div>
+    <div class="field-row">
+      <div class="field"><label>Date of supply</label>
+        <input type="date" id="pf-supply" value="${v.supplyDate || today}">
+      </div>
+      <div class="field"><label>Payment terms</label>
+        <input id="pf-terms" value="${escapeHtml(v.paymentTerms || 'Advance')}">
+      </div>
+    </div>
+    <div class="field"><label>Row A — Description</label>
+      <input id="pf-desc" value="${escapeHtml(v.desc || '')}"></div>
+    <div class="field-row">
+      <div class="field"><label>Row A — Unit</label><input id="pf-unit" value="${escapeHtml(v.unit || '')}"></div>
+      <div class="field"><label>Row A — Rate</label><input type="number" id="pf-rate" value="${v.rate || ''}"></div>
+      <div class="field"><label>Row A — Qty</label><input type="number" id="pf-qty" value="${v.qty || 1}"></div>
+    </div>
+    <div class="field-row">
+      <div class="field"><label>Row A — Discount</label><input type="number" id="pf-disc" value="${v.disc || 0}"></div>
+      <div class="field"><label>Row A — SAC code</label><input id="pf-sac" value="${v.sac || '998399'}"></div>
+    </div>
+    <div class="field"><label>Row B — Freight charges (blank = 0)</label>
+      <input type="number" id="pf-freight" value="${v.freight || ''}"></div>
+    <div class="field"><label>Row C — Other taxable charges (blank = 0)</label>
+      <input type="number" id="pf-other" value="${v.other || ''}"></div>
+    <div id="pf-gst-preview" style="background:var(--paper); border-radius:6px; padding:10px 14px; font-size:12.5px; margin-top:4px;"></div>`;
+
+  openModal(existing ? 'Edit Proforma Invoice' : 'New Proforma Invoice', body,
+    `<button class="btn" id="pf-cancel">Cancel</button><button class="btn btn-primary" id="pf-save">${existing ? 'Save changes' : 'Generate PI'}</button>`);
+
+  const preview = () => {
+    const cid = document.getElementById('pf-client').value;
+    const cl = clients.find(c => c.id === cid);
+    const rate = parseFloat(document.getElementById('pf-rate').value) || 0;
+    const qty = parseFloat(document.getElementById('pf-qty').value) || 1;
+    const disc = parseFloat(document.getElementById('pf-disc').value) || 0;
+    const freight = parseFloat(document.getElementById('pf-freight').value) || 0;
+    const other = parseFloat(document.getElementById('pf-other').value) || 0;
+    const net = rate * qty;
+    const taxable = net - disc + freight + other;
+    const type = cl ? gstType(cl.state) : 'igst';
+    const cgst = type === 'intra' ? taxable * 0.09 : 0;
+    const sgst = type === 'intra' ? taxable * 0.09 : 0;
+    const igst = type === 'igst' ? taxable * 0.18 : 0;
+    const gross = taxable + cgst + sgst + igst;
+    const gstLabel = type === 'intra' ? 'CGST 9% + SGST 9%' : 'IGST 18%';
+    document.getElementById('pf-gst-preview').innerHTML =
+      `<b>Preview:</b> Net ${fmtMoney(net)} 2212 Disc ${fmtMoney(disc)} = Taxable ${fmtMoney(taxable)} + ${gstLabel} = <b>Gross ${fmtMoney(gross)}</b>`;
+    return { net, disc, taxable, freight, other, cgst, sgst, igst, gross, type };
+  };
+
+  ['pf-client','pf-rate','pf-qty','pf-disc','pf-freight','pf-other'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.addEventListener('input', preview);
+    if (el && el.tagName === 'SELECT') el.addEventListener('change', preview);
+  });
+  preview();
+
+  document.getElementById('pf-cancel').onclick = closeModal;
+  document.getElementById('pf-save').onclick = () => {
+    const cid = document.getElementById('pf-client').value;
+    const cl = clients.find(c => c.id === cid);
+    if (!cl) { toast('Select a client'); return; }
+    const desc = document.getElementById('pf-desc').value.trim();
+    if (!desc) { toast('Description is required'); return; }
+    const calc = preview();
+    const rec = {
+      id: existing ? existing.id : uid(),
+      invNo: existing ? existing.invNo : nextPINumber(),
+      date: document.getElementById('pf-date').value,
+      supplyDate: document.getElementById('pf-supply').value,
+      paymentTerms: document.getElementById('pf-terms').value,
+      clientId: cid, clientName: cl.companyName, clientShort: cl.shortName,
+      desc, unit: document.getElementById('pf-unit').value,
+      rate: parseFloat(document.getElementById('pf-rate').value) || 0,
+      qty: parseFloat(document.getElementById('pf-qty').value) || 1,
+      sac: document.getElementById('pf-sac').value || '998399',
+      disc: calc.disc, freight: calc.freight, other: calc.other,
+      taxable: calc.taxable, cgst: calc.cgst, sgst: calc.sgst,
+      igst: calc.igst, gross: calc.gross, gstType: calc.type,
+      status: existing ? existing.status : 'draft',
+      piNo: null, // for TIs — the PI it was raised from
+    };
+    if (existing) {
+      Object.assign(existing, rec);
+    } else {
+      DB.invoicing.proformas.push(rec);
+      // Auto-add to cashflow receivables for current month
+      invAddToReceivables(rec, 'PI');
+    }
+    DB.invoicing.piSequence[currentInvFY()] = parseInt(rec.invNo.split('/').pop(), 10);
+    saveDB(); closeModal(); invRenderRegister();
+    toast(`${rec.invNo} ${existing ? 'updated' : 'generated'}`);
+  };
+}
+
+// ── Invoice form (TI) ──────────────────────────────────────
+function invOpenTIForm(fromPiId, editTiId) {
+  invInit();
+  const existingTI = editTiId ? DB.invoicing.taxInvoices.find(t => t.id === editTiId) : null;
+  const sourcePi = fromPiId ? DB.invoicing.proformas.find(p => p.id === fromPiId) : null;
+  const v = existingTI || sourcePi || {};
+  const clients = DB.invoicing.clients;
+  const today = new Date().toISOString().slice(0, 10);
+
+  // If converting from PI, pre-select that client and pre-fill
+  const preClient = v.clientId || '';
+  const body = `
+    ${sourcePi ? `<div class="hint" style="background:var(--blue-bg); margin-bottom:12px;">Converting from ${escapeHtml(sourcePi.invNo)}. Review details and confirm or change below.</div>` : ''}
+    <div class="field-row">
+      <div class="field"><label>Client</label>
+        <select id="ti-client">${clients.map(c =>
+          `<option value="${c.id}" ${preClient===c.id?'selected':''}>${escapeHtml(c.shortName)} — ${escapeHtml(c.companyName)}</option>`
+        ).join('')}</select>
+      </div>
+      <div class="field"><label>Invoice date</label>
+        <input type="date" id="ti-date" value="${existingTI ? existingTI.date : today}">
+      </div>
+    </div>
+    <div class="field-row">
+      <div class="field"><label>Date of supply</label>
+        <input type="date" id="ti-supply" value="${v.supplyDate || today}">
+      </div>
+      <div class="field"><label>Payment terms</label>
+        <input id="ti-terms" value="${escapeHtml(v.paymentTerms || 'Advance')}">
+      </div>
+    </div>
+    <div class="field"><label>Row A — Description</label>
+      <input id="ti-desc" value="${escapeHtml(v.desc || '')}"></div>
+    <div class="field-row">
+      <div class="field"><label>Row A — Unit</label><input id="ti-unit" value="${escapeHtml(v.unit || '')}"></div>
+      <div class="field"><label>Row A — Rate</label><input type="number" id="ti-rate" value="${v.rate || ''}"></div>
+      <div class="field"><label>Row A — Qty</label><input type="number" id="ti-qty" value="${v.qty || 1}"></div>
+    </div>
+    <div class="field-row">
+      <div class="field"><label>Row A — Discount</label><input type="number" id="ti-disc" value="${v.disc || 0}"></div>
+      <div class="field"><label>Row A — SAC code</label><input id="ti-sac" value="${v.sac || '998399'}"></div>
+    </div>
+    <div class="field"><label>Row B — Freight charges</label>
+      <input type="number" id="ti-freight" value="${v.freight || ''}"></div>
+    <div class="field"><label>Row C — Other taxable charges</label>
+      <input type="number" id="ti-other" value="${v.other || ''}"></div>
+    <div id="ti-gst-preview" style="background:var(--paper); border-radius:6px; padding:10px 14px; font-size:12.5px; margin-top:4px;"></div>`;
+
+  openModal(existingTI ? 'Edit Tax Invoice' : 'New Tax Invoice', body,
+    `<button class="btn" id="ti-cancel">Cancel</button><button class="btn btn-primary" id="ti-save">${existingTI ? 'Save changes' : 'Generate TI'}</button>`);
+
+  const preview = () => {
+    const cid = document.getElementById('ti-client').value;
+    const cl = clients.find(c => c.id === cid);
+    const rate = parseFloat(document.getElementById('ti-rate').value) || 0;
+    const qty = parseFloat(document.getElementById('ti-qty').value) || 1;
+    const disc = parseFloat(document.getElementById('ti-disc').value) || 0;
+    const freight = parseFloat(document.getElementById('ti-freight').value) || 0;
+    const other = parseFloat(document.getElementById('ti-other').value) || 0;
+    const net = rate * qty;
+    const taxable = net - disc + freight + other;
+    const type = cl ? gstType(cl.state) : 'igst';
+    const cgst = type === 'intra' ? taxable * 0.09 : 0;
+    const sgst = type === 'intra' ? taxable * 0.09 : 0;
+    const igst = type === 'igst' ? taxable * 0.18 : 0;
+    const gross = taxable + cgst + sgst + igst;
+    const gstLabel = type === 'intra' ? 'CGST 9% + SGST 9%' : 'IGST 18%';
+    document.getElementById('ti-gst-preview').innerHTML =
+      `<b>Preview:</b> Net ${fmtMoney(net)} 2212 Disc ${fmtMoney(disc)} = Taxable ${fmtMoney(taxable)} + ${gstLabel} = <b>Gross ${fmtMoney(gross)}</b>`;
+    return { net, disc, taxable, freight, other, cgst, sgst, igst, gross, type };
+  };
+  ['ti-client','ti-rate','ti-qty','ti-disc','ti-freight','ti-other'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.addEventListener('input', preview);
+    if (el && el.tagName === 'SELECT') el.addEventListener('change', preview);
+  });
+  preview();
+
+  document.getElementById('ti-cancel').onclick = closeModal;
+  document.getElementById('ti-save').onclick = () => {
+    const cid = document.getElementById('ti-client').value;
+    const cl = clients.find(c => c.id === cid);
+    if (!cl) { toast('Select a client'); return; }
+    const desc = document.getElementById('ti-desc').value.trim();
+    if (!desc) { toast('Description is required'); return; }
+    const calc = preview();
+    const rec = {
+      id: existingTI ? existingTI.id : uid(),
+      invNo: existingTI ? existingTI.invNo : nextTINumber(),
+      date: document.getElementById('ti-date').value,
+      supplyDate: document.getElementById('ti-supply').value,
+      paymentTerms: document.getElementById('ti-terms').value,
+      clientId: cid, clientName: cl.companyName, clientShort: cl.shortName,
+      desc, unit: document.getElementById('ti-unit').value,
+      rate: parseFloat(document.getElementById('ti-rate').value) || 0,
+      qty: parseFloat(document.getElementById('ti-qty').value) || 1,
+      sac: document.getElementById('ti-sac').value || '998399',
+      disc: calc.disc, freight: calc.freight, other: calc.other,
+      taxable: calc.taxable, cgst: calc.cgst, sgst: calc.sgst,
+      igst: calc.igst, gross: calc.gross, gstType: calc.type,
+      status: existingTI ? existingTI.status : 'draft',
+      fromPiId: sourcePi ? sourcePi.id : (existingTI ? existingTI.fromPiId : null),
+      fromPiNo: sourcePi ? sourcePi.invNo : (existingTI ? existingTI.fromPiNo : null),
+    };
+    if (existingTI) {
+      Object.assign(existingTI, rec);
+    } else {
+      DB.invoicing.taxInvoices.push(rec);
+      // If converting from PI: mark PI as converted, remove PI receivable, add TI receivable
+      if (sourcePi) {
+        sourcePi.status = 'converted';
+        invRemoveFromReceivables(sourcePi.invNo);
+      }
+      invAddToReceivables(rec, 'TI');
+    }
+    DB.invoicing.tiSequence[currentInvFY()] = parseInt(rec.invNo.split('/').pop(), 10);
+    saveDB(); closeModal(); INV_TAB = 'ti'; invRenderRegister();
+    toast(`${rec.invNo} ${existingTI ? 'updated' : 'generated'}`);
+  };
+}
+
+// ── Cashflow integration ───────────────────────────────────
+function invAddToReceivables(inv, type) {
+  const mk = inv.date ? inv.date.slice(0, 7) : todayMonthKey();
+  const m = ensureMonthExists(mk);
+  m.receivables.push({
+    id: uid(),
+    name: `${inv.invNo} — ${inv.clientShort || inv.clientName}`,
+    amount: inv.gross,
+    _invoiceId: inv.id,
+    _invoiceType: type,
+  });
+  if (mk === todayMonthKey()) syncCarriedReceivables();
+  saveDB([mk, nextMonthKey(todayMonthKey())]);
+}
+
+function invRemoveFromReceivables(invNo) {
+  // Remove the receivable created by this invoice number across all months
+  Object.values(DB.months).forEach(m => {
+    if (m.receivables) {
+      m.receivables = m.receivables.filter(r => !r.name || !r.name.startsWith(invNo));
+    }
+  });
+}
+
+function invCancel(invId, type) {
+  if (!confirm('Cancel this invoice? This will also remove its receivable from the cashflow.')) return;
+  invInit();
+  if (type === 'pi') {
+    const inv = DB.invoicing.proformas.find(p => p.id === invId);
+    if (inv) { invRemoveFromReceivables(inv.invNo); inv.status = 'cancelled'; }
+  } else {
+    const inv = DB.invoicing.taxInvoices.find(t => t.id === invId);
+    if (inv) { invRemoveFromReceivables(inv.invNo); inv.status = 'cancelled'; }
+  }
+  saveDB(); invRenderRegister();
+  toast('Invoice cancelled and receivable removed');
+}
+
+// ── Email (mailto) ─────────────────────────────────────────
+function invEmail(invId, type) {
+  invInit();
+  const inv = type === 'pi'
+    ? DB.invoicing.proformas.find(p => p.id === invId)
+    : DB.invoicing.taxInvoices.find(t => t.id === invId);
+  if (!inv) return;
+  const cl = DB.invoicing.clients.find(c => c.id === inv.clientId);
+  const to = cl ? cl.email : '';
+  const subject = `${inv.invNo} — ${type === 'pi' ? 'Proforma Invoice' : 'Tax Invoice'} from Goru Training Pvt. Ltd.`;
+  const body = `Dear ${cl ? cl.attn : 'Sir/Madam'},\n\nPlease find attached ${inv.invNo} dated ${inv.date} for ${inv.desc}.\n\nGross Amount: ₹${inv.gross.toLocaleString('en-IN')}\n\nKindly arrange payment at your earliest convenience.\n\nRegards,\nGoru Training Pvt. Ltd.`;
+  window.open(`mailto:${encodeURIComponent(to)}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`);
+  toast('Email client opened — attach the downloaded Excel before sending');
+}
+
+// ── Excel generation ───────────────────────────────────────
+async function invDownloadExcel(invId, type) {
+  invInit();
+  const inv = type === 'pi'
+    ? DB.invoicing.proformas.find(p => p.id === invId)
+    : DB.invoicing.taxInvoices.find(t => t.id === invId);
+  if (!inv) return;
+  const cl = DB.invoicing.clients.find(c => c.id === inv.clientId) || {};
+  toast('Generating Excel…');
+  try {
+    const XLSX = window.XLSX;
+    if (!XLSX) { toast('Excel library not loaded — try refreshing'); return; }
+    const wb = XLSX.utils.book_new();
+    const isPi = type === 'pi';
+    const rows = invBuildSheetData(inv, cl, isPi);
+    const ws = XLSX.utils.aoa_to_sheet(rows);
+    ws['!cols'] = [
+      {wch:4},{wch:30},{wch:10},{wch:8},{wch:10},{wch:12},{wch:8},
+      {wch:14},{wch:5},{wch:12},{wch:5},{wch:12},{wch:5},{wch:12},{wch:14}
+    ];
+    XLSX.utils.book_append_sheet(wb, ws, 'Invoice');
+    XLSX.writeFile(wb, `${inv.invNo.replace(/\//g,'-')}.xlsx`);
+    toast(`${inv.invNo} downloaded`);
+  } catch (e) {
+    console.error(e);
+    toast('Excel generation failed — ' + e.message);
+  }
+}
+
+function invBuildSheetData(inv, cl, isPi) {
+  const title = isPi ? 'PROFORMA INVOICE' : 'TAX INVOICE';
+  const numLabel = isPi ? 'Proforma Invoice No :-' : 'Tax Invoice No :-';
+  const dateLabel = isPi ? 'Proforma Invoice Date :-' : 'Tax Invoice Date :-';
+  const intra = inv.gstType === 'intra';
+  const amtWords = numberToWords(Math.round(inv.gross));
+
+  // Client address block
+  const addrLines = [cl.companyName||'', cl.addr1||'', cl.addr2||'', cl.addr3||''].filter(Boolean);
+
+  return [
+    ['','','','','','','','','','','','','','',''],        // row 1
+    ['','','','','','','','','','','','','','',''],        // row 2
+    ['','','','','','','','','','','','','','',''],
+    ['','','','','','','','','','','','','','',''],
+    ['','','','','','','','','','','','','','',''],
+    ['','','','','','','','','','','','','','',''],
+    ['','','','','','','','','','','','','','',''],
+    ['','','','','','','','','','','','','','',''],
+    ['',title,'','','','','','','','','','','','',''],    // row 9: title
+    ['','','','','','','','','','','','','','',''],
+    ['From,','','','','','To,','','','','','',numLabel,'','',inv.invNo],
+    [GORU.name,'','','','',addrLines[0]||'','','','','','',dateLabel,'','',inv.date],
+    ['','','','','',addrLines[1]||'','','','','','','Date of Supply :-','','',inv.supplyDate],
+    ['','','','','',addrLines[2]||'','','','','','','Place of Supply :-','','',cl.state||''],
+    ['State :-','Maharashtra','','','','State :-','','','','','','Kind Attn:','','',cl.attn||''],
+    ['GSTIN :-',GORU.gstin,'','','','GSTIN :-',cl.gstin||'','','','','','Mob :-','','',cl.mobile||''],
+    ['PAN :-',GORU.pan,'','','','PAN :-',cl.pan||'','','','','','Email:-','','',cl.email||''],
+    ['TAN :-',GORU.tan,'','','','TAN :-',cl.tan||'','','','','','','',''],
+    ['','','','','','','','','','','','','','',''],
+    ['SR','DESCRIPTION','HNS/SAC CODE','UNIT','RATE','NET AMOUNT','DISC','TAXABLE VALUE','CGST','','SGST','','IGST','','GROSS AMOUNT'],
+    ['','','','','','','','','%','AMOUNT','%','AMOUNT','%','AMOUNT',''],
+    ['A',inv.desc,inv.sac,inv.unit,inv.rate,inv.rate*(inv.qty||1),inv.disc,inv.taxable,
+      intra?0.09:0, intra?(inv.taxable*0.09):0,
+      intra?0.09:0, intra?(inv.taxable*0.09):0,
+      intra?0:0.18, intra?0:(inv.taxable*0.18),
+      inv.gross - (inv.freight||0) - (inv.other||0)],
+    ['','','','','','','','','','','','','','',''],
+    ['B','Freight charges','','','','','',(inv.freight||0), 0,0, 0,0, intra?0:0.18, intra?0:((inv.freight||0)*0.18), (inv.freight||0)*(intra?1:1.18)],
+    ['C','Other Taxable Charges','','','','','','', inv.other||0, 0,0, 0,0, intra?0:0.18, intra?0:((inv.other||0)*0.18)],
+    ['TOTAL','','','','','','',(inv.taxable||0), 0,(inv.cgst||0), 0,(inv.sgst||0), 0,(inv.igst||0),(inv.gross||0)],
+    ['','','','','','','','','','','','','','',''],
+    [`Gross Amount in Words :- ${amtWords}`,'','','','','','','','','','','','','',''],
+    ['','','','','','','','','','','','','','',''],
+    ['','','','','','','','','','','','','','',''],
+    [`Payment Terms :  ${inv.paymentTerms||''}`, '','','','','','','','','','','','','','FOR GORU TRAINING PRIVATE LIMITED'],
+    [`All payments by bank transfer/draft/cheque payable at Mumbai in favour of "Goru Training Pvt. Ltd."`],
+    [`Bank Name: ${GORU.bank}    Branch: ${GORU.branch}`],
+    [`A/c. No.: ${GORU.acno};   IFSC Code: ${GORU.ifsc};`],
+    ['','','','','','','','','','','','','','',''],
+    ['','','','','','','','','','','','','','AUTHORISED SIGNATORY',''],
+  ];
+}
+
+// Simple number to words for Indian currency
+function numberToWords(n) {
+  if (n === 0) return 'Zero Rupees Only';
+  const ones = ['','One','Two','Three','Four','Five','Six','Seven','Eight','Nine',
+    'Ten','Eleven','Twelve','Thirteen','Fourteen','Fifteen','Sixteen','Seventeen','Eighteen','Nineteen'];
+  const tens = ['','','Twenty','Thirty','Forty','Fifty','Sixty','Seventy','Eighty','Ninety'];
+  function w(num) {
+    if (num < 20) return ones[num];
+    if (num < 100) return tens[Math.floor(num/10)] + (num%10 ? ' ' + ones[num%10] : '');
+    if (num < 1000) return ones[Math.floor(num/100)] + ' Hundred' + (num%100 ? ' ' + w(num%100) : '');
+    return '';
+  }
+  const cr = Math.floor(n / 10000000); n %= 10000000;
+  const lac = Math.floor(n / 100000); n %= 100000;
+  const th = Math.floor(n / 1000); n %= 1000;
+  const parts = [];
+  if (cr) parts.push(w(cr) + ' Crore');
+  if (lac) parts.push(w(lac) + ' Lakh');
+  if (th) parts.push(w(th) + ' Thousand');
+  if (n) parts.push(w(n));
+  return parts.join(' ') + ' Rupees Only';
+}
+
+// ── Report generator ───────────────────────────────────────
+function invOpenReport() {
+  invInit();
+  const fy = currentInvFY();
+  const body = `
+    <div class="field-row">
+      <div class="field"><label>Report type</label>
+        <select id="rpt-type">
+          <option value="all">All invoices</option>
+          <option value="pi">Proforma invoices only</option>
+          <option value="ti">Tax invoices only</option>
+        </select>
+      </div>
+      <div class="field"><label>Group by</label>
+        <select id="rpt-group">
+          <option value="none">None (flat list)</option>
+          <option value="client">Client</option>
+          <option value="month">Month</option>
+          <option value="quarter">Quarter (AMJ = Q1)</option>
+        </select>
+      </div>
+    </div>
+    <div class="field-row">
+      <div class="field"><label>From date</label><input type="date" id="rpt-from"></div>
+      <div class="field"><label>To date</label><input type="date" id="rpt-to"></div>
+    </div>
+    <div class="field"><label>Client (leave blank for all)</label>
+      <select id="rpt-client">
+        <option value="">All clients</option>
+        ${DB.invoicing.clients.map(c => `<option value="${c.id}">${escapeHtml(c.shortName)} — ${escapeHtml(c.companyName)}</option>`).join('')}
+      </select>
+    </div>`;
+  openModal('Generate report', body,
+    `<button class="btn" id="rpt-cancel">Cancel</button><button class="btn btn-primary" id="rpt-run">Download Excel</button>`);
+  document.getElementById('rpt-cancel').onclick = closeModal;
+  document.getElementById('rpt-run').onclick = invRunReport;
+}
+
+function invRunReport() {
+  invInit();
+  const type = document.getElementById('rpt-type').value;
+  const group = document.getElementById('rpt-group').value;
+  const from = document.getElementById('rpt-from').value;
+  const to = document.getElementById('rpt-to').value;
+  const clientFilter = document.getElementById('rpt-client').value;
+
+  let list = [];
+  if (type !== 'ti') list = list.concat(DB.invoicing.proformas.map(i => ({ ...i, _type: 'PI' })));
+  if (type !== 'pi') list = list.concat(DB.invoicing.taxInvoices.map(i => ({ ...i, _type: 'TI' })));
+
+  // Filters
+  if (from) list = list.filter(i => i.date >= from);
+  if (to) list = list.filter(i => i.date <= to);
+  if (clientFilter) list = list.filter(i => i.clientId === clientFilter);
+  list = list.filter(i => i.status !== 'cancelled');
+  list.sort((a, b) => (a.date || '').localeCompare(b.date || ''));
+
+  const XLSX = window.XLSX;
+  if (!XLSX) { toast('Excel library not loaded'); return; }
+
+  const quarterLabel = date => {
+    if (!date) return '';
+    const m = parseInt(date.slice(5, 7));
+    if ([4,5,6].includes(m)) return 'Q1 (AMJ)';
+    if ([7,8,9].includes(m)) return 'Q2 (JAS)';
+    if ([10,11,12].includes(m)) return 'Q3 (OND)';
+    return 'Q4 (JFM)';
+  };
+  const monthLabel2 = date => date ? date.slice(0, 7) : '';
+
+  const headers = ['Type','Invoice No','Date','Client','Description','Taxable','CGST','SGST','IGST','Gross','Status'];
+  if (group !== 'none') headers.unshift('Group');
+
+  const rows = [headers];
+  let groupKey = '';
+  let groupTotal = 0;
+
+  const addRow = (i, gk) => {
+    const row = [i._type, i.invNo, i.date, i.clientShort||i.clientName, i.desc,
+      i.taxable, i.cgst||0, i.sgst||0, i.igst||0, i.gross, i.status];
+    if (group !== 'none') row.unshift(gk);
+    rows.push(row);
+    groupTotal += i.gross || 0;
+  };
+
+  list.forEach(i => {
+    let gk = '';
+    if (group === 'client') gk = i.clientShort || i.clientName;
+    else if (group === 'month') gk = monthLabel2(i.date);
+    else if (group === 'quarter') gk = quarterLabel(i.date);
+
+    if (group !== 'none' && gk !== groupKey) {
+      if (groupKey) {
+        const totalRow = new Array(headers.length).fill('');
+        totalRow[0] = `${groupKey} TOTAL`;
+        totalRow[headers.length - 2] = groupTotal;
+        rows.push(totalRow);
+        rows.push([]);
+      }
+      groupKey = gk; groupTotal = 0;
+    }
+    addRow(i, gk);
+  });
+
+  if (group !== 'none' && groupKey) {
+    const totalRow = new Array(headers.length).fill('');
+    totalRow[0] = `${groupKey} TOTAL`;
+    totalRow[headers.length - 2] = groupTotal;
+    rows.push(totalRow);
+  }
+
+  // Grand total
+  const grandTotal = list.reduce((s, i) => s + (i.gross || 0), 0);
+  rows.push([]);
+  const gtRow = new Array(headers.length).fill('');
+  gtRow[0] = 'GRAND TOTAL'; gtRow[headers.length - 2] = grandTotal;
+  rows.push(gtRow);
+
+  const ws = XLSX.utils.aoa_to_sheet(rows);
+  ws['!cols'] = headers.map((h, i) => ({ wch: [8,14,10,20,30,12,8,8,8,12,10][i] || 12 }));
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Invoice Report');
+  const fname = `Invoice_Report_${from||'all'}_to_${to||'all'}.xlsx`;
+  XLSX.writeFile(wb, fname);
+  closeModal();
+  toast(`Report downloaded: ${list.length} invoice${list.length !== 1 ? 's' : ''}`);
+}
+
+/* ===========================================================
+   TEST MODE
+   Snapshots the entire DB before any test activity. UNDO TEST
+   restores the snapshot exactly — all changes during test mode
+   (invoices, payments, receivables, cashflow edits) are wiped.
+   =========================================================== */
+
+let TEST_SNAPSHOT = null; // stringified DB snapshot
+let TEST_MODE_ACTIVE = false;
+
+function activateTestMode() {
+  if (TEST_MODE_ACTIVE) {
+    toast('Test mode is already active');
+    return;
+  }
+  if (!confirm('Activate Test Mode?\n\nA snapshot of all live data will be taken now. You can make any changes freely — clicking "UNDO TEST & RESTORE" will bring everything back to exactly this point.\n\nYour live data is safe.')) return;
+
+  TEST_SNAPSHOT = JSON.stringify(DB);
+  TEST_MODE_ACTIVE = true;
+  localStorage.setItem('lmi_test_snapshot', TEST_SNAPSHOT);
+  localStorage.setItem('lmi_test_mode', '1');
+
+  document.getElementById('testModeBanner').style.display = 'block';
+  document.getElementById('btnTestMode').style.background = '#a4302a';
+  document.getElementById('btnTestMode').style.color = '#fff';
+  document.getElementById('btnTestMode').textContent = 'TEST ●';
+  toast('Test mode active — your live data is safely snapshotted');
+}
+
+function undoTestMode() {
+  if (!TEST_MODE_ACTIVE) {
+    toast('Test mode is not active');
+    return;
+  }
+  if (!TEST_SNAPSHOT) {
+    toast('No snapshot found — cannot undo');
+    return;
+  }
+  if (!confirm('Undo test mode?\n\nThis will restore ALL data to the state it was in when Test Mode was activated. Every change made during the test session (invoices, payments, edits) will be permanently removed.\n\nAre you sure?')) return;
+
+  try {
+    DB = JSON.parse(TEST_SNAPSHOT);
+    saveDB();
+    TEST_MODE_ACTIVE = false;
+    TEST_SNAPSHOT = null;
+    localStorage.removeItem('lmi_test_snapshot');
+    localStorage.removeItem('lmi_test_mode');
+    document.getElementById('testModeBanner').style.display = 'none';
+    document.getElementById('btnTestMode').style.background = '';
+    document.getElementById('btnTestMode').style.color = '';
+    document.getElementById('btnTestMode').textContent = 'TEST';
+    renderAll();
+    toast('✓ Live data restored — test session undone');
+  } catch (e) {
+    toast('Could not restore snapshot: ' + e.message);
+  }
+}
+
+function restoreTestModeIfActive() {
+  // On page load, check if test mode was active before a refresh
+  if (localStorage.getItem('lmi_test_mode') === '1') {
+    TEST_SNAPSHOT = localStorage.getItem('lmi_test_snapshot');
+    TEST_MODE_ACTIVE = true;
+    setTimeout(() => {
+      const banner = document.getElementById('testModeBanner');
+      const btn = document.getElementById('btnTestMode');
+      if (banner) banner.style.display = 'block';
+      if (btn) {
+        btn.style.background = '#a4302a';
+        btn.style.color = '#fff';
+        btn.textContent = 'TEST ●';
+      }
+    }, 100);
+  }
+}
+
+/* ===========================================================
+   PDF GENERATION
+   Reproduces the exact invoice layout as a PDF using jsPDF,
+   then downloads it. Used by the Email flow (user attaches
+   the downloaded PDF to Gmail manually).
+   =========================================================== */
+
+async function invGeneratePDF(inv, cl, isPi) {
+  // Dynamically load jsPDF if not already loaded
+  if (!window.jspdf) {
+    await new Promise((resolve, reject) => {
+      const s = document.createElement('script');
+      s.src = 'https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js';
+      s.onload = resolve;
+      s.onerror = reject;
+      document.head.appendChild(s);
+    });
+  }
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+  const W = 210, ML = 15, MR = 195;
+  const intra = inv.gstType === 'intra';
+  const title = isPi ? 'PROFORMA INVOICE' : 'TAX INVOICE';
+
+  // Header rule
+  doc.setFillColor(15, 37, 64);
+  doc.rect(ML, 10, MR - ML, 8, 'F');
+  doc.setTextColor(255, 255, 255);
+  doc.setFontSize(12); doc.setFont('helvetica', 'bold');
+  doc.text(title, W / 2, 15.5, { align: 'center' });
+
+  // From block
+  doc.setTextColor(30, 30, 30);
+  doc.setFontSize(7.5); doc.setFont('helvetica', 'bold');
+  doc.text('From,', ML, 23);
+  doc.setFont('helvetica', 'normal');
+  doc.text(GORU.name, ML, 27);
+  doc.text('No 1108, Floor No 11th, Sureshwari Techno IT Park Premises,', ML, 31);
+  doc.text('Link Road, Near Eskay Resorts, Borivali 400092 Mumbai', ML, 35);
+  doc.text(`State: ${GORU.state}   GSTIN: ${GORU.gstin}`, ML, 39);
+  doc.text(`PAN: ${GORU.pan}   TAN: ${GORU.tan}`, ML, 43);
+
+  // To block
+  const toX = 110;
+  doc.setFont('helvetica', 'bold');
+  doc.text('To,', toX, 23);
+  doc.setFont('helvetica', 'normal');
+  const addrLines = [cl.companyName||'', cl.addr1||'', cl.addr2||'', cl.addr3||''].filter(Boolean);
+  addrLines.forEach((line, i) => doc.text(line, toX, 27 + i * 4));
+  const toY = 27 + addrLines.length * 4;
+  if (cl.state) doc.text(`State: ${cl.state}`, toX, toY);
+  if (cl.gstin) doc.text(`GSTIN: ${cl.gstin}`, toX, toY + 4);
+  if (cl.pan) doc.text(`PAN: ${cl.pan}`, toX, toY + 8);
+
+  // Invoice details (right column)
+  const dtX = 155;
+  doc.setFont('helvetica', 'bold');
+  doc.text(isPi ? 'Proforma Invoice No:' : 'Tax Invoice No:', dtX, 23);
+  doc.text(isPi ? 'Proforma Invoice Date:' : 'Tax Invoice Date:', dtX, 27);
+  doc.text('Date of Supply:', dtX, 31);
+  doc.text('Place of Supply:', dtX, 35);
+  doc.text('Kind Attn:', dtX, 39);
+  doc.text('Mob:', dtX, 43);
+  doc.setFont('helvetica', 'normal');
+  doc.text(inv.invNo, dtX + 38, 23);
+  doc.text(inv.date || '', dtX + 38, 27);
+  doc.text(inv.supplyDate || '', dtX + 38, 31);
+  doc.text(cl.state || '', dtX + 38, 35);
+  doc.text(cl.attn || '', dtX + 38, 39);
+  doc.text(cl.mobile || '', dtX + 38, 43);
+
+  // Divider
+  doc.setDrawColor(180, 180, 180);
+  doc.line(ML, 48, MR, 48);
+
+  // Table header
+  let y = 52;
+  doc.setFillColor(240, 242, 246);
+  doc.rect(ML, y - 4, MR - ML, 7, 'F');
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(7);
+  const cols = { sr:ML, desc:22, sac:80, unit:95, rate:108, net:122, disc:136, taxable:148, tax:162, gross:185 };
+  doc.text('SR', cols.sr, y);
+  doc.text('DESCRIPTION', cols.desc, y);
+  doc.text('SAC', cols.sac, y);
+  doc.text('UNIT', cols.unit, y);
+  doc.text('RATE', cols.rate, y);
+  doc.text('NET AMT', cols.net, y);
+  doc.text('DISC', cols.disc, y);
+  doc.text('TAXABLE', cols.taxable, y);
+  doc.text(intra ? 'CGST+SGST' : 'IGST', cols.tax, y);
+  doc.text('GROSS', cols.gross, y);
+  y += 7;
+
+  // Row A
+  doc.setFont('helvetica', 'normal');
+  const net = inv.rate * (inv.qty || 1);
+  const taxAmt = intra ? (inv.cgst + inv.sgst) : inv.igst;
+  const rowGross = inv.gross - (inv.freight || 0) - (inv.other || 0);
+  doc.text('A', cols.sr, y);
+  const descLines = doc.splitTextToSize(inv.desc || '', 55);
+  doc.text(descLines, cols.desc, y);
+  doc.text(String(inv.sac || '998399'), cols.sac, y);
+  doc.text(inv.unit || '', cols.unit, y);
+  doc.text(fmt2(inv.rate), cols.rate, y);
+  doc.text(fmt2(net), cols.net, y);
+  doc.text(fmt2(inv.disc || 0), cols.disc, y);
+  doc.text(fmt2(inv.taxable), cols.taxable, y);
+  doc.text(fmt2(taxAmt), cols.tax, y);
+  doc.text(fmt2(rowGross), cols.gross, y);
+  y += Math.max(7, descLines.length * 4 + 3);
+
+  // Row B (freight)
+  if (inv.freight) {
+    doc.text('B', cols.sr, y); doc.text('Freight charges', cols.desc, y);
+    doc.text(fmt2(inv.freight), cols.taxable, y);
+    doc.text(fmt2(inv.freight * (intra ? 0.18 : 0.18)), cols.tax, y);
+    doc.text(fmt2(inv.freight * 1.18), cols.gross, y); y += 7;
+  }
+  // Row C (other)
+  if (inv.other) {
+    doc.text('C', cols.sr, y); doc.text('Other Taxable Charges', cols.desc, y);
+    doc.text(fmt2(inv.other), cols.taxable, y);
+    doc.text(fmt2(inv.other * 0.18), cols.tax, y);
+    doc.text(fmt2(inv.other * 1.18), cols.gross, y); y += 7;
+  }
+
+  // Totals row
+  doc.setFillColor(240, 242, 246);
+  doc.rect(ML, y - 4, MR - ML, 7, 'F');
+  doc.setFont('helvetica', 'bold');
+  doc.text('TOTAL', cols.sr, y);
+  doc.text(fmt2(inv.taxable), cols.taxable, y);
+  doc.text(fmt2(taxAmt), cols.tax, y);
+  doc.text(fmt2(inv.gross), cols.gross, y);
+  y += 10;
+
+  // Amount in words
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(7.5);
+  doc.text(`Gross Amount in Words: ${numberToWords(Math.round(inv.gross))}`, ML, y);
+  y += 8;
+
+  // Payment terms
+  if (inv.paymentTerms) {
+    doc.text(`Payment Terms: ${inv.paymentTerms}`, ML, y); y += 5;
+  }
+  doc.text('All payments by bank transfer/draft/cheque payable at Mumbai in favour of "Goru Training Pvt. Ltd."', ML, y); y += 4;
+  doc.text(`Bank: ${GORU.bank}, Branch: ${GORU.branch}`, ML, y); y += 4;
+  doc.text(`A/c No: ${GORU.acno}   IFSC: ${GORU.ifsc}`, ML, y); y += 10;
+
+  // Authorised signatory
+  doc.setFont('helvetica', 'bold');
+  doc.text('FOR GORU TRAINING PRIVATE LIMITED', MR - 5, y, { align: 'right' }); y += 10;
+  doc.text('AUTHORISED SIGNATORY', MR - 5, y, { align: 'right' });
+
+  // Border around entire document
+  doc.setDrawColor(180, 180, 180);
+  doc.rect(ML, 8, MR - ML, y, 'S');
+
+  const filename = `${inv.invNo.replace(/\//g, '-')}.pdf`;
+  doc.save(filename);
+  return filename;
+}
+
+function fmt2(n) {
+  return (Number(n) || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+/* ===========================================================
+   IMPROVED EMAIL MODAL
+   Downloads PDF, then opens Gmail compose with pre-filled
+   subject, To, and body. User attaches the downloaded PDF.
+   =========================================================== */
+
+async function invEmail(invId, type) {
+  invInit();
+  const inv = type === 'pi'
+    ? DB.invoicing.proformas.find(p => p.id === invId)
+    : DB.invoicing.taxInvoices.find(t => t.id === invId);
+  if (!inv) return;
+  const cl = DB.invoicing.clients.find(c => c.id === inv.clientId) || {};
+  const isPi = type === 'pi';
+  const typeLabel = isPi ? 'Proforma Invoice' : 'Tax Invoice';
+
+  const defaultBody = `Dear ${cl.attn || 'Sir/Madam'},
+
+Please find attached ${inv.invNo} dated ${inv.date} from Goru Training Pvt. Ltd.
+
+Description: ${inv.desc}
+Gross Amount: ₹${(inv.gross || 0).toLocaleString('en-IN')}
+
+${isPi ? 'Kindly review and confirm the order.' : 'Kindly arrange payment at your earliest convenience.'}
+
+Regards,
+Goru Training Pvt. Ltd.`;
+
+  const subject = `${inv.invNo} — ${typeLabel} from Goru Training Pvt. Ltd.`;
+
+  const body = `
+    <div class="hint" style="background:var(--blue-bg); margin-bottom:14px;">
+      Step 1 — Click <strong>Download PDF</strong> to save the invoice.<br>
+      Step 2 — Click <strong>Open Gmail</strong> to compose the email, then attach the downloaded PDF.
+    </div>
+    <div class="field">
+      <label>To (email)</label>
+      <input id="em-to" value="${escapeHtml(cl.email || '')}">
+    </div>
+    <div class="field">
+      <label>Subject</label>
+      <input id="em-subject" value="${escapeHtml(subject)}">
+    </div>
+    <div class="field">
+      <label>Email body template</label>
+      <select id="em-template" style="margin-bottom:8px;">
+        <option value="custom">Custom (type below)</option>
+        <option value="pi_standard">PI — Standard text (coming soon)</option>
+        <option value="ti_standard">TI — Standard text (coming soon)</option>
+      </select>
+      <textarea id="em-body" rows="8" style="width:100%; padding:9px 11px; border:1px solid var(--line); border-radius:5px; font-size:13px; font-family:var(--sans); resize:vertical;">${escapeHtml(defaultBody)}</textarea>
+    </div>`;
+
+  openModal(`Email ${inv.invNo}`, body,
+    `<button class="btn" id="em-cancel">Cancel</button>
+     <button class="btn btn-primary" id="em-pdf">&#8659; Download PDF first</button>
+     <button class="btn btn-primary" id="em-open-gmail">&#9993; Open Gmail</button>`);
+
+  document.getElementById('em-cancel').onclick = closeModal;
+
+  document.getElementById('em-template').onchange = e => {
+    if (e.target.value !== 'custom') {
+      toast('Standard templates coming soon — type your message below for now');
+      e.target.value = 'custom';
+    }
+  };
+
+  document.getElementById('em-pdf').onclick = async () => {
+    const btn = document.getElementById('em-pdf');
+    btn.textContent = 'Generating PDF…';
+    btn.disabled = true;
+    try {
+      await invGeneratePDF(inv, cl, isPi);
+      btn.textContent = '✓ PDF downloaded';
+      toast(`${inv.invNo}.pdf downloaded — attach it in Gmail`);
+    } catch (e) {
+      btn.textContent = '⬇ Download PDF first';
+      btn.disabled = false;
+      toast('PDF generation failed: ' + e.message);
+    }
+  };
+
+  document.getElementById('em-open-gmail').onclick = () => {
+    const to = document.getElementById('em-to').value.trim();
+    const subj = document.getElementById('em-subject').value.trim();
+    const bodyText = document.getElementById('em-body').value.trim();
+    const gmailUrl = `https://mail.google.com/mail/?view=cm&fs=1&to=${encodeURIComponent(to)}&su=${encodeURIComponent(subj)}&body=${encodeURIComponent(bodyText)}`;
+    window.open(gmailUrl, '_blank');
+    closeModal();
+    toast('Gmail opened — attach the downloaded PDF before sending');
+  };
+}

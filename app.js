@@ -1,6 +1,6 @@
 /* ===========================================================
    LMI Cashflow Manager — application logic
-   VERSION 2.3.6 — edit PI/TI syncs cashflow receivable amount; cancel vs permanent delete modal; invUpdateReceivableAmount() — header updated to match actual LMI India letterhead (LMI INDIA branding, Apeejay House address, CIN, email/web/tel, logo placeholder), footer updated.
+   VERSION 2.3.7 — fix: Word download uses Packer.toBlob (browser-compatible) instead of Packer.toBuffer (Node-only); fix dataset.invWord reference; invBuildWordDoc returns Document not Buffer. — edit PI/TI syncs cashflow receivable amount; cancel vs permanent delete modal; invUpdateReceivableAmount() — header updated to match actual LMI India letterhead (LMI INDIA branding, Apeejay House address, CIN, email/web/tel, logo placeholder), footer updated.
    doc output matching exact template layout (15-col table,
    all fields, borders, amounts in words), next number preview,
    invoicing module auto-opens from dashboard buttons.
@@ -2380,7 +2380,7 @@ function invRenderRegister() {
   body.querySelectorAll('[data-inv-to-ti]').forEach(b =>
     b.onclick = () => invOpenTIForm(b.dataset.invToTi));
   body.querySelectorAll('[data-inv-word]').forEach(b =>
-    b.onclick = () => invDownloadWord(b.dataset.invExcel, b.dataset.invType));
+    b.onclick = () => invDownloadWord(b.dataset.invWord, b.dataset.invType));
   body.querySelectorAll('[data-inv-email]').forEach(b =>
     b.onclick = () => invEmail(b.dataset.invEmail, b.dataset.invType));
   body.querySelectorAll('[data-inv-del]').forEach(b =>
@@ -2942,19 +2942,23 @@ async function invDownloadWord(invId, type) {
   toast('Generating Word document…');
   try {
     const docxLib = window.docx;
-    if (!docxLib) { toast('Word library not loaded — try refreshing'); return; }
-    const buf = await invBuildWordDoc(inv, cl, type === 'pi', docxLib);
-    const blob = new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
+    if (!docxLib) { toast('Word library not loaded — try refreshing the page'); return; }
+    const isPi = type === 'pi';
+    const doc = await invBuildWordDoc(inv, cl, isPi, docxLib);
+    // Use toBlob (browser-compatible) instead of toBuffer (Node-only)
+    const blob = await docxLib.Packer.toBlob(doc);
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
     a.download = `${inv.invNo.replace(/\//g, '-')}.docx`;
+    document.body.appendChild(a);
     a.click();
+    document.body.removeChild(a);
     setTimeout(() => URL.revokeObjectURL(url), 3000);
     toast(`${inv.invNo}.docx downloaded`);
   } catch (e) {
-    console.error(e);
-    toast('Word generation failed — ' + e.message);
+    console.error('Word generation error:', e);
+    toast('Word generation failed — ' + (e.message || String(e)));
   }
 }
 
@@ -3347,7 +3351,7 @@ async function invBuildWordDoc(inv, cl, isPi, D) {
     }]
   });
 
-  return await Packer.toBuffer(doc);
+  return doc;
 }
 
 function invBuildSheetData(inv, cl, isPi) {

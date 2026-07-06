@@ -1,5 +1,5 @@
 /* ===========================================================
-   LMI Cashflow Manager — Supabase sync layer  VERSION 2.3.1
+   LMI Cashflow Manager — Supabase sync layer  VERSION 2.3.3
    Handles auth, cloud load/save, and realtime multi-device sync.
    Loaded BEFORE app.js. Exposes window.Cloud.
    =========================================================== */

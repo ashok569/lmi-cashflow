@@ -1,6 +1,6 @@
 /* ===========================================================
    LMI Cashflow Manager — application logic
-   VERSION 2.4.0 — adds: Product master (ADD PRODUCT, PRODUCT LIST, CSV import, OFFLINE/ONLINE/OTHER categories, MOVE button), multi-line invoice items (Add another program), dynamic Word doc (landscape, LMI South Asia header, QTY column, no freight row, multi-item rows), delete receivable PI ripple, date of supply pre-fill, cancel invoice retains delete button. — fix: Word download uses Packer.toBlob (browser-compatible) instead of Packer.toBuffer (Node-only); fix dataset.invWord reference; invBuildWordDoc returns Document not Buffer. — edit PI/TI syncs cashflow receivable amount; cancel vs permanent delete modal; invUpdateReceivableAmount() — header updated to match actual LMI India letterhead (LMI INDIA branding, Apeejay House address, CIN, email/web/tel, logo placeholder), footer updated.
+   VERSION 2.4.1 — adds: Product master (ADD PRODUCT, PRODUCT LIST, CSV import, OFFLINE/ONLINE/OTHER categories, MOVE button), multi-line invoice items (Add another program), dynamic Word doc (landscape, LMI South Asia header, QTY column, no freight row, multi-item rows), delete receivable PI ripple, date of supply pre-fill, cancel invoice retains delete button. — fix: Word download uses Packer.toBlob (browser-compatible) instead of Packer.toBuffer (Node-only); fix dataset.invWord reference; invBuildWordDoc returns Document not Buffer. — edit PI/TI syncs cashflow receivable amount; cancel vs permanent delete modal; invUpdateReceivableAmount() — header updated to match actual LMI India letterhead (LMI INDIA branding, Apeejay House address, CIN, email/web/tel, logo placeholder), footer updated.
    doc output matching exact template layout (15-col table,
    all fields, borders, amounts in words), next number preview,
    invoicing module auto-opens from dashboard buttons.
@@ -2592,6 +2592,52 @@ function invOpenStartNumbers() {
 }
 
 // ── Invoice form (PI) ──────────────────────────────────────
+// ── Nature of Invoice helpers ──────────────────────────────
+const DEFAULT_NATURES = ['PROG SALE', 'SALES SUPPORT', 'LICENSEE FEE', 'EMAIL Cost'];
+
+function invGetNatures() {
+  invInit();
+  if (!DB.invoicing.natures) DB.invoicing.natures = [...DEFAULT_NATURES];
+  return DB.invoicing.natures;
+}
+
+function invGetNatureOptions(selected) {
+  const natures = invGetNatures();
+  return natures.map(n =>
+    `<option value="${escapeHtml(n)}" ${n === selected ? 'selected' : ''}>${escapeHtml(n)}</option>`
+  ).join('');
+}
+
+function invAddNature(currentSelectId) {
+  const name = prompt('Add new Nature of Invoice:');
+  if (!name || !name.trim()) return;
+  const natures = invGetNatures();
+  if (natures.includes(name.trim())) { toast('Already exists'); return; }
+  natures.push(name.trim());
+  DB.invoicing.natures = natures;
+  saveDB();
+  // Refresh dropdown
+  const sel = document.getElementById(currentSelectId);
+  if (sel) {
+    sel.innerHTML = invGetNatureOptions(name.trim());
+    sel.value = name.trim();
+  }
+  toast(`Nature "${name.trim()}" added`);
+}
+
+function invCalcReceivable(taxable, gstType, tdsDeducted) {
+  const intra = gstType === 'intra';
+  const cgst = intra ? taxable * 0.09 : 0;
+  const sgst = intra ? taxable * 0.09 : 0;
+  const igst = intra ? 0 : taxable * 0.18;
+  const grossBeforeTDS = taxable + cgst + sgst + igst;
+  if (tdsDeducted === 'yes') {
+    const tds = taxable * 0.10;
+    return Math.round((taxable - tds + cgst + sgst + igst) * 100) / 100;
+  }
+  return Math.round(grossBeforeTDS * 100) / 100;
+}
+
 function invOpenPIForm(editId) {
   invInit();
   // If called from dashboard (not from invoicing tab), open the module first
@@ -2645,12 +2691,25 @@ function invOpenPIForm(editId) {
     </div>
 
     <div class="field-row">
-      <div class="field"><label>Freight charges (₹)</label>
-        <input type="number" id="pf-freight" value="${v.freight || ''}"></div>
-      <div class="field"><label>Other taxable charges (₹)</label>
-        <input type="number" id="pf-other" value="${v.other || ''}"></div>
+      <div class="field"><label>Nature of invoice</label>
+        <div style="display:flex;gap:6px;">
+          <select id="pf-nature" style="flex:1;">
+            ${invGetNatureOptions(v.nature||'')}
+          </select>
+          <button type="button" id="pf-nature-add" class="btn btn-sm" title="Add new nature">+</button>
+        </div>
+      </div>
       <div class="field"><label>SAC code</label>
         <input id="pf-sac" value="${v.sac || '998399'}"></div>
+    </div>
+    <div class="field-row">
+      <div class="field"><label>TDS deducted?</label>
+        <select id="pf-tds">
+          <option value="no" ${(v.tdsDeducted||'no')==='no'?'selected':''}>No</option>
+          <option value="yes" ${(v.tdsDeducted||'no')==='yes'?'selected':''}>Yes — 10% TDS on taxable amount</option>
+        </select>
+        <div style="font-size:11px;color:var(--ink-soft);margin-top:3px;">If YES: receivable = (taxable − 10% TDS) + GST</div>
+      </div>
     </div>
     <div id="pf-gst-preview" style="background:var(--paper); border-radius:6px; padding:10px 14px; font-size:12.5px; margin-top:4px;"></div>`;
 
@@ -2737,19 +2796,23 @@ function invOpenPIForm(editId) {
   const pfPreview = () => {
     const cid = document.getElementById('pf-client').value;
     const cl = clients.find(c => c.id === cid);
-    const freight = parseFloat(document.getElementById('pf-freight').value) || 0;
-    const other = parseFloat(document.getElementById('pf-other').value) || 0;
+    const tdsDeducted = document.getElementById('pf-tds') ? document.getElementById('pf-tds').value : 'no';
     const linesTaxable = pfLines.reduce((s, l) => s + (l.rate*(l.qty||1)) - (l.disc||0), 0);
-    const taxable = linesTaxable + freight + other;
+    const taxable = linesTaxable;
     const type = cl ? gstType(cl.state) : 'igst';
-    const cgst = type === 'intra' ? taxable * 0.09 : 0;
-    const sgst = type === 'intra' ? taxable * 0.09 : 0;
-    const igst = type === 'igst' ? taxable * 0.18 : 0;
+    const intra = type === 'intra';
+    const cgst = intra ? taxable * 0.09 : 0;
+    const sgst = intra ? taxable * 0.09 : 0;
+    const igst = intra ? 0 : taxable * 0.18;
     const gross = taxable + cgst + sgst + igst;
-    const gstLabel = type === 'intra' ? 'CGST 9% + SGST 9%' : 'IGST 18%';
+    const receivable = invCalcReceivable(taxable, type, tdsDeducted);
+    const gstLabel = intra ? 'CGST 9% + SGST 9%' : 'IGST 18%';
+    const tdsNote = tdsDeducted === 'yes'
+      ? ` | TDS 10% = ${fmtMoney(taxable*0.1)} | <strong>Receivable: ${fmtMoney(receivable)}</strong>`
+      : ` | <strong>Receivable: ${fmtMoney(receivable)}</strong>`;
     document.getElementById('pf-gst-preview').innerHTML =
-      `<b>Preview:</b> Lines taxable ${fmtMoney(linesTaxable)} + Freight/Other ${fmtMoney(freight+other)} = ${fmtMoney(taxable)} + ${gstLabel} = <b>Gross ${fmtMoney(gross)}</b>`;
-    return { linesTaxable, taxable, freight, other, cgst, sgst, igst, gross, type };
+      `<b>Preview:</b> Taxable ${fmtMoney(taxable)} + ${gstLabel} = Gross ${fmtMoney(gross)}${tdsNote}`;
+    return { linesTaxable, taxable, cgst, sgst, igst, gross, type, tdsDeducted, receivable };
   };
 
   renderPfLines();
@@ -2760,7 +2823,11 @@ function invOpenPIForm(editId) {
     renderPfLines(); pfPreview();
   };
 
-  ['pf-client','pf-freight','pf-other'].forEach(id => {
+  // Wire Nature add button
+  const pfNatureAddBtn = document.getElementById('pf-nature-add');
+  if (pfNatureAddBtn) pfNatureAddBtn.onclick = () => invAddNature('pf-nature');
+
+  ['pf-client','pf-tds'].forEach(id => {
     const el = document.getElementById(id);
     if (el) el.addEventListener('input', pfPreview);
     if (el && el.tagName === 'SELECT') el.addEventListener('change', pfPreview);
@@ -2775,12 +2842,15 @@ function invOpenPIForm(editId) {
     const calc = pfPreview();
     // desc/unit/rate for backward compat (first line item)
     const firstLine = pfLines[0];
+    const nature = document.getElementById('pf-nature') ? document.getElementById('pf-nature').value : '';
+    const tdsDeducted = document.getElementById('pf-tds') ? document.getElementById('pf-tds').value : 'no';
     const rec = {
       id: existing ? existing.id : uid(),
       invNo: existing ? existing.invNo : nextPINumber(),
       date: document.getElementById('pf-date').value,
       supplyDate: document.getElementById('pf-supply').value || document.getElementById('pf-date').value,
       paymentTerms: document.getElementById('pf-terms').value,
+      nature, tdsDeducted,
       clientId: cid, clientName: cl.companyName, clientShort: cl.shortName,
       // Multi-line items
       lineItems: pfLines.map(l => ({ desc: l.desc, unit: l.unit, rate: l.rate, qty: l.qty||1, disc: l.disc||0 })),
@@ -2791,15 +2861,15 @@ function invOpenPIForm(editId) {
       qty: firstLine.qty || 1,
       sac: document.getElementById('pf-sac').value || '998399',
       disc: pfLines.reduce((s,l)=>s+(l.disc||0),0),
-      freight: calc.freight, other: calc.other,
       taxable: calc.taxable, cgst: calc.cgst, sgst: calc.sgst,
       igst: calc.igst, gross: calc.gross, gstType: calc.type,
+      receivableAmount: calc.receivable, // may differ from gross if TDS
       status: existing ? existing.status : 'draft',
     };
     if (existing) {
-      const oldGross = existing.gross;
+      const oldRecv = existing.receivableAmount || existing.gross;
       Object.assign(existing, rec);
-      if (oldGross !== rec.gross) invUpdateReceivableAmount(rec.invNo, rec.gross);
+      if (oldRecv !== rec.receivableAmount) invUpdateReceivableAmount(rec.invNo, rec.receivableAmount);
     } else {
       DB.invoicing.proformas.push(rec);
       invAddToReceivables(rec, 'PI');
@@ -2867,10 +2937,20 @@ function invOpenTIForm(fromPiId, editTiId, fromDashboard) {
       <div class="field"><label>Row A — Discount</label><input type="number" id="ti-disc" value="${v.disc || 0}"></div>
       <div class="field"><label>Row A — SAC code</label><input id="ti-sac" value="${v.sac || '998399'}"></div>
     </div>
-    <div class="field"><label>Row B — Freight charges</label>
-      <input type="number" id="ti-freight" value="${v.freight || ''}"></div>
-    <div class="field"><label>Row C — Other taxable charges</label>
-      <input type="number" id="ti-other" value="${v.other || ''}"></div>
+    <div class="field-row">
+      <div class="field"><label>Nature of invoice</label>
+        <div style="display:flex;gap:6px;">
+          <select id="ti-nature" style="flex:1;">${invGetNatureOptions(v.nature||'')}</select>
+          <button type="button" id="ti-nature-add" class="btn btn-sm" title="Add new nature">+</button>
+        </div>
+      </div>
+      <div class="field"><label>TDS deducted?</label>
+        <select id="ti-tds">
+          <option value="no" ${(v.tdsDeducted||'no')==='no'?'selected':''}>No</option>
+          <option value="yes" ${(v.tdsDeducted||'no')==='yes'?'selected':''}>Yes — 10% TDS on taxable amount</option>
+        </select>
+      </div>
+    </div>
     <div id="ti-gst-preview" style="background:var(--paper); border-radius:6px; padding:10px 14px; font-size:12.5px; margin-top:4px;"></div>`;
 
   openModal(existingTI ? 'Edit Tax Invoice' : 'New Tax Invoice', body,
@@ -2882,26 +2962,33 @@ function invOpenTIForm(fromPiId, editTiId, fromDashboard) {
     const rate = parseFloat(document.getElementById('ti-rate').value) || 0;
     const qty = parseFloat(document.getElementById('ti-qty').value) || 1;
     const disc = parseFloat(document.getElementById('ti-disc').value) || 0;
-    const freight = parseFloat(document.getElementById('ti-freight').value) || 0;
-    const other = parseFloat(document.getElementById('ti-other').value) || 0;
+    const tdsDeducted = document.getElementById('ti-tds') ? document.getElementById('ti-tds').value : 'no';
     const net = rate * qty;
-    const taxable = net - disc + freight + other;
+    const taxable = net - disc;
     const type = cl ? gstType(cl.state) : 'igst';
-    const cgst = type === 'intra' ? taxable * 0.09 : 0;
-    const sgst = type === 'intra' ? taxable * 0.09 : 0;
-    const igst = type === 'igst' ? taxable * 0.18 : 0;
+    const intra = type === 'intra';
+    const cgst = intra ? taxable * 0.09 : 0;
+    const sgst = intra ? taxable * 0.09 : 0;
+    const igst = intra ? 0 : taxable * 0.18;
     const gross = taxable + cgst + sgst + igst;
-    const gstLabel = type === 'intra' ? 'CGST 9% + SGST 9%' : 'IGST 18%';
+    const receivable = invCalcReceivable(taxable, type, tdsDeducted);
+    const gstLabel = intra ? 'CGST 9% + SGST 9%' : 'IGST 18%';
+    const tdsNote = tdsDeducted === 'yes'
+      ? ` | TDS 10% = ${fmtMoney(taxable*0.1)} | <strong>Receivable: ${fmtMoney(receivable)}</strong>`
+      : ` | <strong>Receivable: ${fmtMoney(receivable)}</strong>`;
     document.getElementById('ti-gst-preview').innerHTML =
-      `<b>Preview:</b> Net ${fmtMoney(net)} 2212 Disc ${fmtMoney(disc)} = Taxable ${fmtMoney(taxable)} + ${gstLabel} = <b>Gross ${fmtMoney(gross)}</b>`;
-    return { net, disc, taxable, freight, other, cgst, sgst, igst, gross, type };
+      `<b>Preview:</b> Taxable ${fmtMoney(taxable)} + ${gstLabel} = Gross ${fmtMoney(gross)}${tdsNote}`;
+    return { net, disc, taxable, cgst, sgst, igst, gross, type, tdsDeducted, receivable };
   };
-  ['ti-client','ti-rate','ti-qty','ti-disc','ti-freight','ti-other'].forEach(id => {
+  ['ti-client','ti-rate','ti-qty','ti-disc','ti-tds'].forEach(id => {
     const el = document.getElementById(id);
     if (el) el.addEventListener('input', preview);
     if (el && el.tagName === 'SELECT') el.addEventListener('change', preview);
   });
   preview();
+
+  const tiNatureBtn = document.getElementById('ti-nature-add');
+  if (tiNatureBtn) tiNatureBtn.onclick = () => invAddNature('ti-nature');
 
   document.getElementById('ti-cancel').onclick = closeModal;
   document.getElementById('ti-save').onclick = () => {
@@ -2911,30 +2998,33 @@ function invOpenTIForm(fromPiId, editTiId, fromDashboard) {
     const desc = document.getElementById('ti-desc').value.trim();
     if (!desc) { toast('Description is required'); return; }
     const calc = preview();
+    const nature = document.getElementById('ti-nature') ? document.getElementById('ti-nature').value : '';
+    const tdsDeducted = document.getElementById('ti-tds') ? document.getElementById('ti-tds').value : 'no';
     const rec = {
       id: existingTI ? existingTI.id : uid(),
       invNo: existingTI ? existingTI.invNo : nextTINumber(),
       date: document.getElementById('ti-date').value,
       supplyDate: document.getElementById('ti-supply').value,
       paymentTerms: document.getElementById('ti-terms').value,
+      nature, tdsDeducted,
       clientId: cid, clientName: cl.companyName, clientShort: cl.shortName,
       desc, unit: document.getElementById('ti-unit').value,
       rate: parseFloat(document.getElementById('ti-rate').value) || 0,
       qty: parseFloat(document.getElementById('ti-qty').value) || 1,
       sac: document.getElementById('ti-sac').value || '998399',
-      disc: calc.disc, freight: calc.freight, other: calc.other,
+      disc: calc.disc,
       taxable: calc.taxable, cgst: calc.cgst, sgst: calc.sgst,
       igst: calc.igst, gross: calc.gross, gstType: calc.type,
+      receivableAmount: calc.receivable,
       status: existingTI ? existingTI.status : 'draft',
       fromPiId: sourcePi ? sourcePi.id : (existingTI ? existingTI.fromPiId : null),
       fromPiNo: sourcePi ? sourcePi.invNo : (existingTI ? existingTI.fromPiNo : null),
     };
     if (existingTI) {
-      const oldGross = existingTI.gross;
+      const oldRecv = existingTI.receivableAmount || existingTI.gross;
       Object.assign(existingTI, rec);
-      // If amount changed, update the linked cashflow receivable
-      if (oldGross !== rec.gross) {
-        invUpdateReceivableAmount(rec.invNo, rec.gross);
+      if (oldRecv !== rec.receivableAmount) {
+        invUpdateReceivableAmount(rec.invNo, rec.receivableAmount);
       }
     } else {
       DB.invoicing.taxInvoices.push(rec);
@@ -2974,10 +3064,11 @@ function invUpdateReceivableAmount(invNo, newGross) {
 function invAddToReceivables(inv, type) {
   const mk = inv.date ? inv.date.slice(0, 7) : todayMonthKey();
   const m = ensureMonthExists(mk);
+  const amount = inv.receivableAmount || inv.gross; // use TDS-adjusted amount if set
   m.receivables.push({
     id: uid(),
     name: `${inv.invNo} — ${inv.clientShort || inv.clientName}`,
-    amount: inv.gross,
+    amount,
     _invoiceId: inv.id,
     _invoiceType: type,
   });
@@ -3055,20 +3146,6 @@ function invCancel(invId, type) {
 }
 
 // ── Email (mailto) ─────────────────────────────────────────
-function invEmail(invId, type) {
-  invInit();
-  const inv = type === 'pi'
-    ? DB.invoicing.proformas.find(p => p.id === invId)
-    : DB.invoicing.taxInvoices.find(t => t.id === invId);
-  if (!inv) return;
-  const cl = DB.invoicing.clients.find(c => c.id === inv.clientId);
-  const to = cl ? cl.email : '';
-  const subject = `${inv.invNo} — ${type === 'pi' ? 'Proforma Invoice' : 'Tax Invoice'} from Goru Training Pvt. Ltd.`;
-  const body = `Dear ${cl ? cl.attn : 'Sir/Madam'},\n\nPlease find attached ${inv.invNo} dated ${inv.date} for ${inv.desc}.\n\nGross Amount: ₹${inv.gross.toLocaleString('en-IN')}\n\nKindly arrange payment at your earliest convenience.\n\nRegards,\nGoru Training Pvt. Ltd.`;
-  window.open(`mailto:${encodeURIComponent(to)}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`);
-  toast('Email client opened — attach the downloaded Excel before sending');
-}
-
 // ── Excel generation ───────────────────────────────────────
 async function invDownloadWord(invId, type) {
   invInit();
@@ -3521,12 +3598,17 @@ async function invBuildWordDoc(inv, cl, isPi, D) {
     ]
   });
 
+  const { PageOrientation } = D;
+
   const doc = new Document({
     sections:[{
-      properties:{ page:{ size:{width:11906,height:16838},
-        margin:{top:1800,right:850,bottom:1200,left:850} } },
+      properties:{ page:{ size:{
+        width: 11906,    // docx library swaps internally — give portrait values + orient=landscape
+        height: 16838,   // result: w:w="16838" h:h="11906" orient="landscape" in XML
+        orientation: PageOrientation ? PageOrientation.LANDSCAPE : 'landscape',
+      },
+        margin:{top:600,right:700,bottom:600,left:700} } },
       headers: { default: docHeader },
-      footers: { default: docFooter },
       children:[table]
     }]
   });
@@ -3997,25 +4079,29 @@ async function invEmail(invId, type) {
   const cl = DB.invoicing.clients.find(c => c.id === inv.clientId) || {};
   const isPi = type === 'pi';
   const typeLabel = isPi ? 'Proforma Invoice' : 'Tax Invoice';
+  const typePrefix = isPi ? 'PI' : 'TI';
 
-  const defaultBody = `Dear ${cl.attn || 'Sir/Madam'},
+  // Build default subject: PI/TI + invoice number - your order for NN of SHORT
+  const firstLine = (inv.lineItems && inv.lineItems[0]) || {};
+  const qty = firstLine.qty || inv.qty || '';
+  // Try to get short name from product or use SAC/desc
+  const shortDesc = (() => {
+    if (firstLine.desc) {
+      // Extract short form: first word or product code in parens
+      const parenMatch = firstLine.desc.match(/\(([A-Z]{2,6})\)/);
+      if (parenMatch) return parenMatch[1];
+      return firstLine.desc.split(' ').slice(0,3).join(' ');
+    }
+    return inv.desc ? inv.desc.split(' ').slice(0,3).join(' ') : typePrefix;
+  })();
+  const defaultSubject = `${inv.invNo} — Your order for ${qty} of ${shortDesc}`;
 
-Please find attached ${inv.invNo} dated ${inv.date} from Goru Training Pvt. Ltd.
-
-Description: ${inv.desc}
-Gross Amount: ₹${(inv.gross || 0).toLocaleString('en-IN')}
-
-${isPi ? 'Kindly review and confirm the order.' : 'Kindly arrange payment at your earliest convenience.'}
-
-Regards,
-Goru Training Pvt. Ltd.`;
-
-  const subject = `${inv.invNo} — ${typeLabel} from Goru Training Pvt. Ltd.`;
+  const defaultBody = `Dear ${cl.attn || 'Sir/Madam'},\n\nPlease find attached ${inv.invNo} dated ${inv.date} from LMI South Asia — A Division of Goru Training Pvt. Ltd.\n\nDescription: ${inv.desc || shortDesc}\nGross Amount: ₹${(inv.gross || 0).toLocaleString('en-IN')}${inv.tdsDeducted === 'yes' ? `\nReceivable after TDS (10%): ₹${(inv.receivableAmount || inv.gross || 0).toLocaleString('en-IN')}` : ''}\n\n${isPi ? 'Kindly review and confirm the order.' : 'Kindly arrange payment at your earliest convenience.'}\n\nRegards,\nLMI South Asia — Goru Training Pvt. Ltd.`;
 
   const body = `
-    <div class="hint" style="background:var(--blue-bg); margin-bottom:14px;">
-      Step 1 — Click <strong>Download Word doc</strong> to save the invoice.<br>
-      Step 2 — Click <strong>Open Gmail</strong> to compose the email, then attach the downloaded PDF.
+    <div class="hint" style="background:#e8f0fb; margin-bottom:14px;">
+      <strong>Step 1</strong> — Click Download Word doc to save the invoice.<br>
+      <strong>Step 2</strong> — Click Open Gmail to compose, then attach the downloaded file.
     </div>
     <div class="field">
       <label>To (email)</label>
@@ -4023,10 +4109,10 @@ Goru Training Pvt. Ltd.`;
     </div>
     <div class="field">
       <label>Subject</label>
-      <input id="em-subject" value="${escapeHtml(subject)}">
+      <input id="em-subject" value="${escapeHtml(defaultSubject)}">
     </div>
     <div class="field">
-      <label>Email body template</label>
+      <label>Email body</label>
       <select id="em-template" style="margin-bottom:8px;">
         <option value="custom">Custom (type below)</option>
         <option value="pi_standard">PI — Standard text (coming soon)</option>
@@ -4041,7 +4127,6 @@ Goru Training Pvt. Ltd.`;
      <button class="btn btn-primary" id="em-open-gmail">&#9993; Open Gmail</button>`);
 
   document.getElementById('em-cancel').onclick = closeModal;
-
   document.getElementById('em-template').onchange = e => {
     if (e.target.value !== 'custom') {
       toast('Standard templates coming soon — type your message below for now');
@@ -4071,7 +4156,7 @@ Goru Training Pvt. Ltd.`;
     const gmailUrl = `https://mail.google.com/mail/?view=cm&fs=1&to=${encodeURIComponent(to)}&su=${encodeURIComponent(subj)}&body=${encodeURIComponent(bodyText)}`;
     window.open(gmailUrl, '_blank');
     closeModal();
-    toast('Gmail opened — attach the downloaded PDF before sending');
+    toast('Gmail opened — attach the downloaded Word doc before sending');
   };
 }
 

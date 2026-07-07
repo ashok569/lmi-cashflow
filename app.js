@@ -1,6 +1,6 @@
 /* ===========================================================
    LMI Cashflow Manager — application logic
-   VERSION 2.4.1 — adds: Product master (ADD PRODUCT, PRODUCT LIST, CSV import, OFFLINE/ONLINE/OTHER categories, MOVE button), multi-line invoice items (Add another program), dynamic Word doc (landscape, LMI South Asia header, QTY column, no freight row, multi-item rows), delete receivable PI ripple, date of supply pre-fill, cancel invoice retains delete button. — fix: Word download uses Packer.toBlob (browser-compatible) instead of Packer.toBuffer (Node-only); fix dataset.invWord reference; invBuildWordDoc returns Document not Buffer. — edit PI/TI syncs cashflow receivable amount; cancel vs permanent delete modal; invUpdateReceivableAmount() — header updated to match actual LMI India letterhead (LMI INDIA branding, Apeejay House address, CIN, email/web/tel, logo placeholder), footer updated.
+   VERSION 2.4.2 — adds: Product master (ADD PRODUCT, PRODUCT LIST, CSV import, OFFLINE/ONLINE/OTHER categories, MOVE button), multi-line invoice items (Add another program), dynamic Word doc (landscape, LMI South Asia header, QTY column, no freight row, multi-item rows), delete receivable PI ripple, date of supply pre-fill, cancel invoice retains delete button. — fix: Word download uses Packer.toBlob (browser-compatible) instead of Packer.toBuffer (Node-only); fix dataset.invWord reference; invBuildWordDoc returns Document not Buffer. — edit PI/TI syncs cashflow receivable amount; cancel vs permanent delete modal; invUpdateReceivableAmount() — header updated to match actual LMI India letterhead (LMI INDIA branding, Apeejay House address, CIN, email/web/tel, logo placeholder), footer updated.
    doc output matching exact template layout (15-col table,
    all fields, borders, amounts in words), next number preview,
    invoicing module auto-opens from dashboard buttons.
@@ -3276,75 +3276,6 @@ async function invBuildWordDoc(inv, cl, isPi, D) {
     children: [para(run2(title, { bold: true, size: 28, color: WHITE }), AlignmentType.CENTER)]
   })]});
 
-  // ── From/To header row ──
-  const fromW = COLS[0]+COLS[1]+COLS[2]+COLS[3]+COLS[4];
-  const toW   = COLS[5]+COLS[6]+COLS[7]+COLS[8]+COLS[9]+COLS[10];
-  const lbW   = COLS[11]+COLS[12]+COLS[13];
-
-  const bL = (t=false,b=false,l=true,r=false) => ({
-    top: t?thinBorder:noBorder, bottom: b?thinBorder:noBorder,
-    left: l?thinBorder:noBorder, right: r?thinBorder:noBorder
-  });
-
-  function addrRow2(fromTxt, toTxt, lbTxt, valTxt, fromBold=false) {
-    return new TableRow({ children: [
-      new TableCell({ width:{size:fromW,type:WidthType.DXA}, columnSpan:5,
-        borders:bL(false,false,true,false), margins:{top:30,bottom:30,left:80,right:80},
-        children:[para(run2(fromTxt||'',{bold:fromBold,size:18}))] }),
-      new TableCell({ width:{size:toW,type:WidthType.DXA}, columnSpan:6,
-        borders:bL(false,false,true,false), margins:{top:30,bottom:30,left:80,right:80},
-        children:[para(run2(toTxt||'',{size:18}))] }),
-      new TableCell({ width:{size:lbW,type:WidthType.DXA}, columnSpan:3,
-        borders:bL(false,false,true,false), margins:{top:30,bottom:30,left:80,right:80},
-        children:[para(run2(lbTxt||'',{bold:true,size:17}))] }),
-      new TableCell({ width:{size:COLS[14],type:WidthType.DXA},
-        borders:bL(false,false,true,true), margins:{top:30,bottom:30,left:80,right:80},
-        children:[para(run2(valTxt||'',{size:17}))] }),
-    ]});
-  }
-
-  function lvRow(fl,fv,tl,tv,rl,rv) {
-    function lvCell(lbl,val,w,cs) {
-      return new TableCell({ width:{size:w,type:WidthType.DXA}, columnSpan:cs||1,
-        borders:bL(false,false,true,false), margins:{top:30,bottom:30,left:80,right:80},
-        children:[para([run2(lbl,{bold:true,size:17}),run2(' '+(val||''),{size:17})])] });
-    }
-    return new TableRow({ children:[
-      lvCell(fl,fv,fromW,5), lvCell(tl,tv,toW,6), lvCell(rl,rv,lbW,3),
-      new TableCell({ width:{size:COLS[14],type:WidthType.DXA},
-        borders:bL(false,false,true,true),
-        children:[new Paragraph({children:[]})] })
-    ]});
-  }
-
-  // ── Invoice meta row (No + Date, above From/To) ──
-  const invMetaRows = [new TableRow({ children: [
-    tc(run2(invLabel, {bold:true,size:17}), Math.floor(TOTAL/4),
-      {borders:{top:noBorder,bottom:thinBorder,left:noBorder,right:noBorder}}),
-    tc(run2(fmtDate(inv.invNo ? inv.invNo : ''), {bold:true,size:17,color:'CC0000'}), Math.floor(TOTAL/4),
-      {borders:{top:noBorder,bottom:thinBorder,left:noBorder,right:noBorder}}),
-    tc(run2(dateLabel, {bold:true,size:17}), Math.floor(TOTAL/4),
-      {borders:{top:noBorder,bottom:thinBorder,left:noBorder,right:noBorder}}),
-    tc(run2(fmtDate(inv.date||''), {size:17}), TOTAL - Math.floor(TOTAL/4)*3,
-      {borders:{top:noBorder,bottom:thinBorder,left:noBorder,right:noBorder}}),
-  ]})];
-
-  // ── From/To first row with inv number ──
-  const fromHdrRow = new TableRow({ children:[
-    new TableCell({ width:{size:fromW,type:WidthType.DXA}, columnSpan:5,
-      borders:bL(true,false,true,false), margins:{top:60,bottom:20,left:80,right:80},
-      children:[para(run2('From,',{bold:true,size:19}))] }),
-    new TableCell({ width:{size:toW,type:WidthType.DXA}, columnSpan:6,
-      borders:bL(true,false,true,false), margins:{top:60,bottom:20,left:80,right:80},
-      children:[para(run2('To,',{bold:true,size:19}))] }),
-    new TableCell({ width:{size:lbW,type:WidthType.DXA}, columnSpan:3,
-      borders:bL(true,false,true,false), margins:{top:60,bottom:20,left:80,right:80},
-      children:[para(run2(invLabel,{bold:true,size:17}))] }),
-    new TableCell({ width:{size:COLS[14],type:WidthType.DXA},
-      borders:bL(true,false,true,true), margins:{top:60,bottom:20,left:80,right:80},
-      children:[para(run2(inv.invNo,{bold:true,size:17,color:NAVY}))] }),
-  ]});
-
   // ── Line item rows ──
   const lineHdr1 = new TableRow({ children:[
     hdrCell('SR',COLS[0]), hdrCell('DESCRIPTION',COLS[1]),
@@ -3471,30 +3402,123 @@ async function invBuildWordDoc(inv, cl, isPi, D) {
       ] }),
   ]});
 
-  const table = new Table({
-    width:{size:TOTAL,type:WidthType.DXA}, columnWidths:COLS,
+  // ── Table 1: Title ──────────────────────────────────────────
+  const titleTable = new Table({
+    width:{size:TOTAL,type:WidthType.DXA}, columnWidths:[TOTAL],
+    rows:[titleRow]
+  });
+
+  // ── Table 2: Invoice meta (No + Date) ───────────────────────
+  const metaW = Math.floor(TOTAL/4);
+  const metaTable = new Table({
+    width:{size:TOTAL,type:WidthType.DXA},
+    columnWidths:[metaW, metaW, metaW, TOTAL - metaW*3],
+    rows:[new TableRow({ children:[
+      tc(run2(invLabel,{bold:true,size:17}), metaW,
+        {borders:{top:noBorder,bottom:thinBorder,left:noBorder,right:noBorder},top:20,bottom:20,left:60,right:60}),
+      tc(run2(inv.invNo||'',{bold:true,size:17,color:'CC0000'}), metaW,
+        {borders:{top:noBorder,bottom:thinBorder,left:noBorder,right:noBorder},top:20,bottom:20,left:60,right:60}),
+      tc(run2(dateLabel,{bold:true,size:17}), metaW,
+        {borders:{top:noBorder,bottom:thinBorder,left:noBorder,right:noBorder},top:20,bottom:20,left:60,right:60}),
+      tc(run2(fmtDate(inv.date||''),{size:17}), TOTAL-metaW*3,
+        {borders:{top:noBorder,bottom:thinBorder,left:noBorder,right:noBorder},top:20,bottom:20,left:60,right:60}),
+    ]})]
+  });
+
+  // ── Table 3: From / To ──────────────────────────────────────
+  const fromW = Math.floor(TOTAL * 0.40);
+  const toW   = TOTAL - fromW;
+
+  function addrRow2(fromLabel, fromVal, toLabel, toVal, fromBold=false, toBold=false) {
+    const bFrom = {top:noBorder,bottom:noBorder,left:thinBorder,right:noBorder};
+    const bTo   = {top:noBorder,bottom:noBorder,left:thinBorder,right:thinBorder};
+    return new TableRow({ children:[
+      new TableCell({ width:{size:fromW,type:WidthType.DXA},
+        borders:bFrom, margins:{top:6,bottom:6,left:80,right:40},
+        children:[para([run2(fromLabel,{bold:true,size:16}),run2(' ',{size:16}),run2(fromVal||'',{bold:fromBold,size:16})],AlignmentType.LEFT,{before:3,after:3})]
+      }),
+      new TableCell({ width:{size:toW,type:WidthType.DXA},
+        borders:bTo, margins:{top:6,bottom:6,left:80,right:40},
+        children:[para([run2(toLabel,{bold:true,size:16}),run2(' ',{size:16}),run2(toVal||'',{bold:toBold,size:16})],AlignmentType.LEFT,{before:3,after:3})]
+      }),
+    ]});
+  }
+
+  const fromToTable = new Table({
+    width:{size:TOTAL,type:WidthType.DXA}, columnWidths:[fromW,toW],
     rows:[
-      titleRow,
-      ...invMetaRows,
-      fromHdrRow,
-      addrRow2(GORU.name, cl.companyName||'', dateLabel, fmtDate(inv.date)||'', true),
-      addrRow2(GORU.addr1, cl.addr1||'', isPi ? '' : 'Date of Supply :-', isPi ? '' : fmtDate(inv.supplyDate||'')),
-      addrRow2(GORU.addr2, (cl.addr2||'') + (cl.addr3 ? ', ' + cl.addr3 : ''), 'Supply Destination:', cl.state||''),
-      lvRow('State: '+GORU.state,'','State: '+(cl.state||''),'','',''),
-      lvRow('GSTIN: '+GORU.gstin+'  |  PAN: '+GORU.pan+'  |  TAN: '+GORU.tan,'',
-            'GSTIN: '+(cl.gstin||'')+'  |  PAN: '+(cl.pan||'')+'  |  TAN: '+(cl.tan||''),'','',''),
-      lvRow('','','Kind Attn: '+(cl.attn||'')+'  |  '+(cl.email||''),'','',''),
-      lvRow('','','Mob: '+(cl.mobile||''),'','',''),
-      lineHdr1,
-      ...lineRows,
-      totalRow2,
-      wordsRow2,
-      splitRow2(`Payment Terms :  ${inv.paymentTerms||'Advance'}`, 'FOR GORU TRAINING PRIVATE LIMITED'),
-      wideRow2('All payments by bank transfer/cheque in favour of "Goru Training Pvt. Ltd." payable at Mumbai'),
-      wideRow2(`Bank: ${GORU.bank}, ${GORU.branch}   A/c: ${GORU.acno}   IFSC: ${GORU.ifsc}`),
-      wideRow2('This is a computer generated invoice  |  contact@lmi-india.in  |  Tel: 022 66364393', false),
-      sigRow2,
+      new TableRow({ children:[
+        new TableCell({ width:{size:fromW,type:WidthType.DXA},
+          borders:{top:thinBorder,bottom:noBorder,left:thinBorder,right:noBorder},
+          margins:{top:8,bottom:4,left:80,right:40},
+          children:[para(run2('From,',{bold:true,size:17}),AlignmentType.LEFT,{before:3,after:3})]
+        }),
+        new TableCell({ width:{size:toW,type:WidthType.DXA},
+          borders:{top:thinBorder,bottom:noBorder,left:thinBorder,right:thinBorder},
+          margins:{top:8,bottom:4,left:80,right:40},
+          children:[para(run2('To,',{bold:true,size:17}),AlignmentType.LEFT,{before:3,after:3})]
+        }),
+      ]}),
+      addrRow2('',GORU.name,'',cl.companyName||'',true,true),
+      addrRow2('',GORU.addr1,'',cl.addr1||''),
+      addrRow2('',GORU.addr2,'', (cl.addr2||'')+(cl.addr3?', '+cl.addr3:'')),
+      addrRow2('State: '+GORU.state,'','State: '+(cl.state||''),''),
+      addrRow2('GSTIN: '+GORU.gstin+'  |  PAN: '+GORU.pan+'  |  TAN: '+GORU.tan,'',
+               'GSTIN: '+(cl.gstin||'')+'  |  PAN: '+(cl.pan||'')+'  |  TAN: '+(cl.tan||''),''),
+      addrRow2('','','Kind Attn: '+(cl.attn||'')+'  |  '+(cl.email||''),''),
+      addrRow2('','','Mob: '+(cl.mobile||''),''),
+      // TI: Date of Supply
+      ...(isPi ? [] : [addrRow2('','','Date of Supply: '+fmtDate(inv.supplyDate||''),'')]),
+      new TableRow({ children:[
+        new TableCell({ width:{size:fromW,type:WidthType.DXA},
+          borders:{top:noBorder,bottom:thinBorder,left:thinBorder,right:noBorder},
+          margins:{top:4,bottom:8,left:80,right:40},
+          children:[para(run2('Place of Supply: '+GORU.state,{size:16}),AlignmentType.LEFT,{before:3,after:3})]
+        }),
+        new TableCell({ width:{size:toW,type:WidthType.DXA},
+          borders:{top:noBorder,bottom:thinBorder,left:thinBorder,right:thinBorder},
+          margins:{top:4,bottom:8,left:80,right:40},
+          children:[para(run2('Supply Destination: '+(cl.state||''),{size:16}),AlignmentType.LEFT,{before:3,after:3})]
+        }),
+      ]}),
     ]
+  });
+
+  // ── Table 4: Line items ─────────────────────────────────────
+  const lineTable = new Table({
+    width:{size:TOTAL,type:WidthType.DXA}, columnWidths:COLS,
+    rows:[lineHdr1, ...lineRows, totalRow2, wordsRow2]
+  });
+
+  // ── Table 5: Payment terms / Bank / Signatory ───────────────
+  const termsSigW1 = 9904;  // ~65% of 15238
+  const termsSigW2 = 5334;  // ~35% of 15238
+
+  const bottomTable = new Table({
+    width:{size:TOTAL,type:WidthType.DXA}, columnWidths:[termsSigW1,termsSigW2],
+    rows:[new TableRow({ children:[
+      new TableCell({ width:{size:termsSigW1,type:WidthType.DXA},
+        borders:{top:thinBorder,bottom:thinBorder,left:thinBorder,right:noBorder},
+        margins:{top:14,bottom:14,left:100,right:80},
+        children:[
+          para([run2('Payment Terms : ',{bold:true,size:16}),run2(inv.paymentTerms||'Advance',{size:16})],AlignmentType.LEFT,{before:5,after:5}),
+          para(run2('Bank transfer/cheque in favour of "Goru Training Pvt. Ltd." payable at Mumbai',{size:15}),AlignmentType.LEFT,{before:3,after:3}),
+          para(run2('Bank: '+GORU.bank+', '+GORU.branch+'   A/c: '+GORU.acno+'   IFSC: '+GORU.ifsc,{size:15}),AlignmentType.LEFT,{before:3,after:3}),
+          para(run2('This is a computer generated invoice  |  contact@lmi-india.in  |  Tel: 022 66364393',{size:14,italics:true,color:'5B6470'}),AlignmentType.LEFT,{before:3,after:5}),
+        ]
+      }),
+      new TableCell({ width:{size:termsSigW2,type:WidthType.DXA},
+        borders:{top:thinBorder,bottom:thinBorder,left:thinBorder,right:thinBorder},
+        margins:{top:14,bottom:14,left:80,right:100},
+        verticalAlign:VerticalAlign.TOP,
+        children:[
+          para(run2('FOR GORU TRAINING PRIVATE LIMITED',{bold:true,size:16,color:NAVY}),AlignmentType.RIGHT,{before:5,after:5}),
+          para(run2('',{size:16}),AlignmentType.RIGHT,{before:0,after:0}),
+          para(run2('',{size:16}),AlignmentType.RIGHT,{before:0,after:0}),
+          para(run2('AUTHORISED SIGNATORY',{bold:true,size:16,color:NAVY}),AlignmentType.RIGHT,{before:5,after:5}),
+        ]
+      }),
+    ]})]
   });
 
   const { Header, Footer } = D;
@@ -3609,7 +3633,17 @@ async function invBuildWordDoc(inv, cl, isPi, D) {
       },
         margin:{top:600,right:700,bottom:600,left:700} } },
       headers: { default: docHeader },
-      children:[table]
+      children:[
+        titleTable,
+        new Paragraph({spacing:{before:60,after:0},children:[]}),
+        metaTable,
+        new Paragraph({spacing:{before:60,after:0},children:[]}),
+        fromToTable,
+        new Paragraph({spacing:{before:60,after:0},children:[]}),
+        lineTable,
+        new Paragraph({spacing:{before:40,after:0},children:[]}),
+        bottomTable,
+      ]
     }]
   });
 

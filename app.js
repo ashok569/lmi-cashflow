@@ -1,6 +1,6 @@
 /* ===========================================================
    LMI Cashflow Manager — application logic
-   VERSION 2.4.5c — new LMI South Asia header image; Nature OTHER manual entry on PI+TI; email templates (PI: Nirali standard, TI: Nirali standard) with live template switcher; PROGRAM dropdown with auto-fill from product list; Add Freight button; max 3 program rows — adds: Product master (ADD PRODUCT, PRODUCT LIST, CSV import, OFFLINE/ONLINE/OTHER categories, MOVE button), multi-line invoice items (Add another program), dynamic Word doc (landscape, LMI South Asia header, QTY column, no freight row, multi-item rows), delete receivable PI ripple, date of supply pre-fill, cancel invoice retains delete button. — fix: Word download uses Packer.toBlob (browser-compatible) instead of Packer.toBuffer (Node-only); fix dataset.invWord reference; invBuildWordDoc returns Document not Buffer. — edit PI/TI syncs cashflow receivable amount; cancel vs permanent delete modal; invUpdateReceivableAmount() — header updated to match actual LMI India letterhead (LMI INDIA branding, Apeejay House address, CIN, email/web/tel, logo placeholder), footer updated.
+   VERSION 2.4.5e — new LMI South Asia header image; Nature OTHER manual entry on PI+TI; email templates (PI: Nirali standard, TI: Nirali standard) with live template switcher; PROGRAM dropdown with auto-fill from product list; Add Freight button; max 3 program rows — adds: Product master (ADD PRODUCT, PRODUCT LIST, CSV import, OFFLINE/ONLINE/OTHER categories, MOVE button), multi-line invoice items (Add another program), dynamic Word doc (landscape, LMI South Asia header, QTY column, no freight row, multi-item rows), delete receivable PI ripple, date of supply pre-fill, cancel invoice retains delete button. — fix: Word download uses Packer.toBlob (browser-compatible) instead of Packer.toBuffer (Node-only); fix dataset.invWord reference; invBuildWordDoc returns Document not Buffer. — edit PI/TI syncs cashflow receivable amount; cancel vs permanent delete modal; invUpdateReceivableAmount() — header updated to match actual LMI India letterhead (LMI INDIA branding, Apeejay House address, CIN, email/web/tel, logo placeholder), footer updated.
    doc output matching exact template layout (15-col table,
    all fields, borders, amounts in words), next number preview,
    invoicing module auto-opens from dashboard buttons.
@@ -313,11 +313,22 @@ function renderFYSelect() {
   }
   sel.innerHTML = opts.map(fy => `<option value="${fy}" ${fy === DB.currentFY ? 'selected' : ''}>FY ${fy}</option>`).join('');
   sel.onchange = () => {
+    const prevFY = DB.currentFY;
     DB.currentFY = sel.value;
     const months = monthsOfFY(DB.currentFY);
     let touched = [];
     if (!months.includes(DB.selectedMonth)) {
       touched = selectMonth(months[0]);
+    }
+    // If switching to a FY that has no data yet, seed all 12 months with recurring template
+    const isNewFY = months.every(mk => !DB.months[mk] || !DB.months[mk]._provisioned);
+    if (isNewFY && DB.recurringTemplate && DB.recurringTemplate.length > 0) {
+      const firstMonth = months[0];
+      const seeded = applyRecurringForward(firstMonth);
+      // Also run ensureMonthlyProvisions for TDS/WACO on each month
+      seeded.forEach(mk => ensureMonthlyProvisions(mk));
+      touched = [...new Set([...touched, ...seeded])];
+      toast(`Recurring payments seeded into FY ${DB.currentFY}`);
     }
     saveDB(touched);
     renderAll();
@@ -420,11 +431,29 @@ function renderRecurringList() {
     wrap.innerHTML = '<div class="empty-note">No recurring payments set up yet.</div>';
     return;
   }
-  wrap.innerHTML = list.map((r, i) => `
-    <div class="recur-item">
+
+  const monthly   = list.filter(r => !r.frequency || r.frequency === 'monthly');
+  const quarterly = list.filter(r => r.frequency === 'quarterly');
+  const annual    = list.filter(r => r.frequency === 'annual');
+
+  function recRow(r) {
+    return `<div class="recur-item">
       <span class="nm"><span class="star">&#9733;</span>${escapeHtml(r.name)}</span>
       <span class="amt">${fmtMoney(r.amount)}</span>
-    </div>`).join('');
+    </div>`;
+  }
+
+  function recSep(label, color) {
+    return `<div style="font-size:10px;font-weight:700;color:${color};text-transform:uppercase;
+      letter-spacing:.07em;padding:5px 0 2px;border-bottom:1px solid ${color}44;
+      margin-top:6px;">${label}</div>`;
+  }
+
+  let html = '';
+  if (monthly.length)   html += recSep('Monthly', '#1e4f8a')   + monthly.map(recRow).join('');
+  if (quarterly.length) html += recSep('Quarterly', '#1f7a4d') + quarterly.map(recRow).join('');
+  if (annual.length)    html += recSep('Annual', '#9a6b14')    + annual.map(recRow).join('');
+  wrap.innerHTML = html;
 }
 
 function renderFDList() {
@@ -488,43 +517,16 @@ function renderLedgers() {
   if (!m.payments.length) {
     paymentsRows.innerHTML = '<div class="empty-note" style="padding:14px;">No payments recorded for this month.</div>';
   } else {
-    // Separate into monthly, quarterly, annual recurring + non-recurring
-    const nonRec  = m.payments.filter(p => !p.recurring);
-    const monthly  = m.payments.filter(p => p.recurring && (!p.frequency || p.frequency === 'monthly'));
-    const quarterly = m.payments.filter(p => p.recurring && p.frequency === 'quarterly');
-    const annual   = m.payments.filter(p => p.recurring && p.frequency === 'annual');
-
-    function payRow(p) {
-      return `
-        <div class="lrow">
-          <span class="nm">${p.recurring ? '<span class="star">&#9733;</span>' : ''}${escapeHtml(p.name)}${p.tds ? ' <span style="color:var(--ink-soft); font-size:10.5px;">(TDS)</span>' : ''}</span>
-          <span class="amt">${p.amount ? fmtMoney(p.amount) : '<span style="color:var(--ink-soft);">pending</span>'}</span>
-          <span data-toggle-status="${p.id}" style="cursor:pointer;" title="Click to change status">${statusBadge(p.status)}</span>
-          <span class="row-actions">
-            <button data-edit-payment="${p.id}" title="Edit">&#9998;</button>
-            <button data-del-payment="${p.id}" title="Delete">&#10005;</button>
-          </span>
-        </div>`;
-    }
-
-    function separator(label, color) {
-      return `<div style="font-size:10.5px;font-weight:700;color:${color};text-transform:uppercase;
-                          letter-spacing:.07em;padding:6px 0 3px;border-bottom:1px solid ${color}33;
-                          margin-top:6px;">${label}</div>`;
-    }
-
-    let html = '';
-    if (nonRec.length) html += nonRec.map(payRow).join('');
-    if (monthly.length) {
-      html += separator('Monthly recurring', '#1e4f8a') + monthly.map(payRow).join('');
-    }
-    if (quarterly.length) {
-      html += separator('Quarterly', '#1f7a4d') + quarterly.map(payRow).join('');
-    }
-    if (annual.length) {
-      html += separator('Annual', '#9a6b14') + annual.map(payRow).join('');
-    }
-    paymentsRows.innerHTML = html;
+    paymentsRows.innerHTML = m.payments.map(p => `
+      <div class="lrow">
+        <span class="nm">${p.recurring ? '<span class="star">&#9733;</span>' : ''}${escapeHtml(p.name)}${p.tds ? ' <span style="color:var(--ink-soft); font-size:10.5px;">(TDS)</span>' : ''}</span>
+        <span class="amt">${p.amount ? fmtMoney(p.amount) : '<span style="color:var(--ink-soft);">pending</span>'}</span>
+        <span data-toggle-status="${p.id}" style="cursor:pointer;" title="Click to change status">${statusBadge(p.status)}</span>
+        <span class="row-actions">
+          <button data-edit-payment="${p.id}" title="Edit">&#9998;</button>
+          <button data-del-payment="${p.id}" title="Delete">&#10005;</button>
+        </span>
+      </div>`).join('');
   }
 
   // wire row actions
@@ -1601,10 +1603,30 @@ function ensureMonthlyProvisions(mk) {
   m._provisioned = true;
 
   // Recurring (starred) payments — only add if not already present
+  // Recurring (starred) payments — respect frequency and startMonth
+  const mkDate = new Date(mk + '-01');
+  const mkMonthIdx = mkDate.getMonth(); // 0=Jan
+  const mkMonthShort = MONTHS_SHORT[mkMonthIdx];
+
   DB.recurringTemplate.forEach(tpl => {
+    const freq = tpl.frequency || 'monthly';
+    const startMonth = tpl.startMonth || MONTHS_SHORT[0];
+    const startIdx = MONTHS_SHORT.indexOf(startMonth);
+
+    let applies = false;
+    if (freq === 'monthly') {
+      applies = true;
+    } else if (freq === 'quarterly') {
+      const diff = (mkMonthIdx - startIdx + 12) % 12;
+      applies = diff % 3 === 0;
+    } else if (freq === 'annual') {
+      applies = mkMonthShort === startMonth;
+    }
+    if (!applies) return;
+
     const existing = m.payments.find(p => p.recurring && p.name.toLowerCase().startsWith(tpl.name.toLowerCase()));
     if (!existing) {
-      m.payments.push({ id: uid(), name: `${tpl.name} for ${monthLabel(mk)}`, amount: tpl.amount, status: 'planned', recurring: true, tds: !!tpl.tds });
+      m.payments.push({ id: uid(), name: `${tpl.name} for ${monthLabel(mk)}`, amount: tpl.amount, status: 'planned', recurring: true, frequency: freq, tds: !!tpl.tds });
     }
   });
 
@@ -1765,10 +1787,11 @@ async function startApp() {
       }
       if (!DB.selectedMonth) DB.selectedMonth = todayMonthKey();
       if (!DB.currentFY) DB.currentFY = fyLabelForMonth(DB.selectedMonth);
+      migrateRecurringFrequency();  // fix any wrongly-categorised recurring items
       ensureMonthExists(DB.selectedMonth);
       ensureMonthlyProvisions(DB.selectedMonth);
       recalcTDSRollup(prevMonthKey(DB.selectedMonth));
-      promoteCarriedReceivables(); // unlock carried entries now that their month is current
+      promoteCarriedReceivables();
       syncCarriedReceivables();
       saveDB([prevMonthKey(DB.selectedMonth), nextMonthKey(todayMonthKey())]);
       Cloud.startRealtime();
@@ -1785,6 +1808,28 @@ async function startApp() {
   } else {
     init();
   }
+}
+
+// Migration: ensure every recurring template entry has an explicit frequency.
+// Any entry without a frequency gets 'monthly' (the safe default).
+// Also fixes the known case where TDS provisional was wrongly tagged quarterly
+// because the WACO quarterly provision logic contaminated it.
+function migrateRecurringFrequency() {
+  if (!DB.recurringTemplate) return;
+  DB.recurringTemplate.forEach(tpl => {
+    if (!tpl.frequency) tpl.frequency = 'monthly';
+    // TDS is always monthly — never quarterly or annual
+    if (/tds/i.test(tpl.name) && tpl.frequency !== 'monthly') {
+      tpl.frequency = 'monthly';
+    }
+  });
+  // Also fix any month payment rows that have recurring:true but wrong frequency
+  Object.values(DB.months || {}).forEach(m => {
+    (m.payments || []).forEach(p => {
+      if (p.recurring && !p.frequency) p.frequency = 'monthly';
+      if (p.recurring && /tds provisional/i.test(p.name)) p.frequency = 'monthly';
+    });
+  });
 }
 
 document.addEventListener('DOMContentLoaded', () => {

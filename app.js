@@ -1,6 +1,6 @@
 /* ===========================================================
    LMI Cashflow Manager — application logic
-   VERSION 2.4.8 — new LMI South Asia header image; Nature OTHER manual entry on PI+TI; email templates (PI: Nirali standard, TI: Nirali standard) with live template switcher; PROGRAM dropdown with auto-fill from product list; Add Freight button; max 3 program rows — adds: Product master (ADD PRODUCT, PRODUCT LIST, CSV import, OFFLINE/ONLINE/OTHER categories, MOVE button), multi-line invoice items (Add another program), dynamic Word doc (landscape, LMI South Asia header, QTY column, no freight row, multi-item rows), delete receivable PI ripple, date of supply pre-fill, cancel invoice retains delete button. — fix: Word download uses Packer.toBlob (browser-compatible) instead of Packer.toBuffer (Node-only); fix dataset.invWord reference; invBuildWordDoc returns Document not Buffer. — edit PI/TI syncs cashflow receivable amount; cancel vs permanent delete modal; invUpdateReceivableAmount() — header updated to match actual LMI India letterhead (LMI INDIA branding, Apeejay House address, CIN, email/web/tel, logo placeholder), footer updated.
+   VERSION 2.4.9 — new LMI South Asia header image; Nature OTHER manual entry on PI+TI; email templates (PI: Nirali standard, TI: Nirali standard) with live template switcher; PROGRAM dropdown with auto-fill from product list; Add Freight button; max 3 program rows — adds: Product master (ADD PRODUCT, PRODUCT LIST, CSV import, OFFLINE/ONLINE/OTHER categories, MOVE button), multi-line invoice items (Add another program), dynamic Word doc (landscape, LMI South Asia header, QTY column, no freight row, multi-item rows), delete receivable PI ripple, date of supply pre-fill, cancel invoice retains delete button. — fix: Word download uses Packer.toBlob (browser-compatible) instead of Packer.toBuffer (Node-only); fix dataset.invWord reference; invBuildWordDoc returns Document not Buffer. — edit PI/TI syncs cashflow receivable amount; cancel vs permanent delete modal; invUpdateReceivableAmount() — header updated to match actual LMI India letterhead (LMI INDIA branding, Apeejay House address, CIN, email/web/tel, logo placeholder), footer updated.
    doc output matching exact template layout (15-col table,
    all fields, borders, amounts in words), next number preview,
    invoicing module auto-opens from dashboard buttons.
@@ -2945,6 +2945,10 @@ function invOpenPIForm(editId) {
 
   // Initialise line items from existing data or blank
   // Each line has: _id, _type ('prog'|'freight'), desc, shortName, rate, qty, disc
+  const pfProducts = DB.invoicing.products || [];
+  const offlineOnlineProds = pfProducts.filter(p => p.category !== 'OTHER');
+  const otherProds = pfProducts.filter(p => p.category === 'OTHER');
+
   let pfLines = [];
   if (existing && existing.lineItems && existing.lineItems.length) {
     pfLines = existing.lineItems.map(l => ({
@@ -2954,10 +2958,6 @@ function invOpenPIForm(editId) {
   } else {
     pfLines = [{ _id: uid(), _type: 'prog', desc: '', shortName: pfProducts.length ? '' : '__manual__', rate: 0, qty: 1, disc: 0 }];
   }
-
-  const pfProducts = DB.invoicing.products || [];
-  const offlineOnlineProds = pfProducts.filter(p => p.category !== 'OTHER');
-  const otherProds = pfProducts.filter(p => p.category === 'OTHER');
 
   function pfProgCount() { return pfLines.filter(l => l._type === 'prog').length; }
   function pfHasFreight() { return pfLines.some(l => l._type === 'freight'); }

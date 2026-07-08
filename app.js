@@ -1,6 +1,6 @@
 /* ===========================================================
    LMI Cashflow Manager — application logic
-   VERSION 2.4.5f — new LMI South Asia header image; Nature OTHER manual entry on PI+TI; email templates (PI: Nirali standard, TI: Nirali standard) with live template switcher; PROGRAM dropdown with auto-fill from product list; Add Freight button; max 3 program rows — adds: Product master (ADD PRODUCT, PRODUCT LIST, CSV import, OFFLINE/ONLINE/OTHER categories, MOVE button), multi-line invoice items (Add another program), dynamic Word doc (landscape, LMI South Asia header, QTY column, no freight row, multi-item rows), delete receivable PI ripple, date of supply pre-fill, cancel invoice retains delete button. — fix: Word download uses Packer.toBlob (browser-compatible) instead of Packer.toBuffer (Node-only); fix dataset.invWord reference; invBuildWordDoc returns Document not Buffer. — edit PI/TI syncs cashflow receivable amount; cancel vs permanent delete modal; invUpdateReceivableAmount() — header updated to match actual LMI India letterhead (LMI INDIA branding, Apeejay House address, CIN, email/web/tel, logo placeholder), footer updated.
+   VERSION 2.4.8 — new LMI South Asia header image; Nature OTHER manual entry on PI+TI; email templates (PI: Nirali standard, TI: Nirali standard) with live template switcher; PROGRAM dropdown with auto-fill from product list; Add Freight button; max 3 program rows — adds: Product master (ADD PRODUCT, PRODUCT LIST, CSV import, OFFLINE/ONLINE/OTHER categories, MOVE button), multi-line invoice items (Add another program), dynamic Word doc (landscape, LMI South Asia header, QTY column, no freight row, multi-item rows), delete receivable PI ripple, date of supply pre-fill, cancel invoice retains delete button. — fix: Word download uses Packer.toBlob (browser-compatible) instead of Packer.toBuffer (Node-only); fix dataset.invWord reference; invBuildWordDoc returns Document not Buffer. — edit PI/TI syncs cashflow receivable amount; cancel vs permanent delete modal; invUpdateReceivableAmount() — header updated to match actual LMI India letterhead (LMI INDIA branding, Apeejay House address, CIN, email/web/tel, logo placeholder), footer updated.
    doc output matching exact template layout (15-col table,
    all fields, borders, amounts in words), next number preview,
    invoicing module auto-opens from dashboard buttons.
@@ -2917,10 +2917,7 @@ function invOpenPIForm(editId) {
     <div class="field-row">
       <div class="field"><label>Nature of invoice</label>
         <div style="display:flex;gap:6px;">
-          <select id="pf-nature" style="flex:1;" onchange="
-            const m=document.getElementById('pf-nature-manual');
-            if(m) m.style.display=this.value==='__other__'?'block':'none';
-          ">
+          <select id="pf-nature" style="flex:1;">
             ${invGetNatureOptions(v.nature||'')}
           </select>
           <button type="button" id="pf-nature-add" class="btn btn-sm" title="Add new nature">+</button>
@@ -2955,7 +2952,7 @@ function invOpenPIForm(editId) {
       _type: (l._type === 'freight' || l.desc === 'Freight / Courier charges') ? 'freight' : 'prog'
     }));
   } else {
-    pfLines = [{ _id: uid(), _type: 'prog', desc: '', shortName: '', rate: 0, qty: 1, disc: 0 }];
+    pfLines = [{ _id: uid(), _type: 'prog', desc: '', shortName: pfProducts.length ? '' : '__manual__', rate: 0, qty: 1, disc: 0 }];
   }
 
   const pfProducts = DB.invoicing.products || [];
@@ -3020,42 +3017,51 @@ function invOpenPIForm(editId) {
       // Program row — PROGRAM dropdown + Qty + Rate
       const allProds = pfProducts;
       const selectedProd = allProds.find(p => p.shortName === line.shortName);
-      const isOther = selectedProd && selectedProd.category === 'OTHER';
-      const isManual = !selectedProd && line.shortName === '__manual__';
+      const isManual = !selectedProd || line.shortName === '__manual__' || !line.shortName;
+      const shortDisplayVal = isManual ? (line.shortName === '__manual__' ? '' : (line.shortName||'')) : (line.shortName||'');
 
       return `
-        <div style="border:1px solid var(--line); border-radius:5px; padding:10px; margin-bottom:8px; background:var(--paper);" data-pf-line="${line._id}">
-          <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:6px;">
+        <div style="border:1px solid ${isManual?'#9a6b14':'var(--line)'}; border-radius:5px; padding:10px; margin-bottom:8px; background:${isManual?'#fffbf0':'var(--paper)'};" data-pf-line="${line._id}">
+          <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px;">
             <span style="font-size:11px; font-weight:700; color:var(--navy);">ROW ${label}</span>
             ${canDelete ? `<button type="button" data-pf-del-line="${line._id}" style="border:none;background:none;color:#aab2bd;cursor:pointer;font-size:13px;">✕</button>` : ''}
           </div>
-          <div style="display:flex;gap:8px;margin-bottom:6px;">
-            <div class="field" style="flex:1;margin:0">
-              <label style="font-size:11px;">Program</label>
-              <select data-pf-line-prog="${line._id}" style="width:100%; font-size:13px;">
-                <option value="">— Select program —</option>
-                ${offlineOnlineProds.length ? `<optgroup label="OFFLINE / ONLINE">
-                  ${offlineOnlineProds.map(p => `<option value="${p.shortName}" ${p.shortName===line.shortName?'selected':''}>${escapeHtml(p.shortName)} — ${escapeHtml(p.longName)}</option>`).join('')}
-                </optgroup>` : ''}
-                ${otherProds.length ? `<optgroup label="OTHER">
-                  ${otherProds.map(p => `<option value="${p.shortName}" ${p.shortName===line.shortName?'selected':''}>${escapeHtml(p.shortName)} — ${escapeHtml(p.longName)}</option>`).join('')}
-                </optgroup>` : ''}
-                <option value="__manual__" ${line.shortName==='__manual__'?'selected':''}>— Enter manually —</option>
-              </select>
+          ${allProds.length ? `
+          <div class="field" style="margin-bottom:8px;">
+            <label style="font-size:11px;">Program (or choose Enter manually for one-off)</label>
+            <select data-pf-line-prog="${line._id}" style="width:100%; font-size:13px;">
+              <option value="">— Select program —</option>
+              ${offlineOnlineProds.length ? `<optgroup label="OFFLINE / ONLINE">
+                ${offlineOnlineProds.map(p => `<option value="${p.shortName}" ${p.shortName===line.shortName?'selected':''}>${escapeHtml(p.shortName)} — ${escapeHtml(p.longName)}</option>`).join('')}
+              </optgroup>` : ''}
+              ${otherProds.length ? `<optgroup label="OTHER">
+                ${otherProds.map(p => `<option value="${p.shortName}" ${p.shortName===line.shortName?'selected':''}>${escapeHtml(p.shortName)} — ${escapeHtml(p.longName)}</option>`).join('')}
+              </optgroup>` : ''}
+              <option value="__manual__" ${isManual?'selected':''}>— Enter manually —</option>
+            </select>
+          </div>` : ''}
+          <div style="display:flex;gap:8px;margin-bottom:8px;">
+            <div class="field" style="flex:0 0 120px;margin:0">
+              <label style="font-size:11px;">Short name${isManual?' <span style="color:#9a6b14;font-weight:700;">(type here)</span>':''}</label>
+              <input type="text" data-pf-line-short="${line._id}"
+                value="${escapeHtml(shortDisplayVal)}"
+                placeholder="${isManual?'e.g. EPP':'auto-filled'}"
+                style="${isManual?'border-color:#9a6b14;background:#fff8f0;':'background:var(--paper-dim,#f5f5f5);color:var(--ink-soft);'}"
+                ${!isManual ? 'readonly' : ''}>
             </div>
             <div class="field" style="flex:1;margin:0">
-              <label style="font-size:11px;">Rate (₹) per program</label>
-              <input type="number" data-pf-line-rate="${line._id}" value="${line.rate||''}" placeholder="Auto-filled from product">
+              <label style="font-size:11px;">Rate (₹)</label>
+              <input type="number" data-pf-line-rate="${line._id}" value="${line.rate||''}" placeholder="0">
             </div>
-            <div class="field" style="flex:0 0 90px;margin:0">
-              <label style="font-size:11px;">Qty (number)</label>
+            <div class="field" style="flex:0 0 80px;margin:0">
+              <label style="font-size:11px;">Qty</label>
               <input type="number" data-pf-line-qty="${line._id}" value="${line.qty||1}" min="1">
             </div>
           </div>
           <div class="field" style="margin:0">
-            <label style="font-size:11px;">Description (auto-filled, editable)</label>
+            <label style="font-size:11px;">Description${isManual?' <span style="color:#9a6b14;font-weight:700;">(type here)</span>':' (auto-filled, editable)'}</label>
             <input type="text" data-pf-line-desc="${line._id}" value="${escapeHtml(line.desc||'')}"
-              placeholder="${isOther||isManual ? 'Enter description manually' : 'Auto-filled when program selected'}">
+              placeholder="${isManual?'Enter full description e.g. One-time setup charges':'Auto-filled from product'}">
           </div>
         </div>`;
     }).join('');
@@ -3078,15 +3084,23 @@ function invOpenPIForm(editId) {
         if (val === '__manual__' || !val) {
           l.desc = '';
           l.rate = 0;
+          // Don't clear shortName display — user will type it
         } else {
           const prod = pfProducts.find(p => p.shortName === val);
           if (prod) {
             l.rate = prod.rate;
-            // OTHER category: auto-fill description but editable; others: "Sale of [longname]"
             l.desc = prod.category === 'OTHER' ? prod.longName : `Sale of ${prod.longName}`;
           }
         }
         renderPfLines(); pfPreview();
+      };
+    });
+
+    // Wire short name input (manual entry)
+    wrap.querySelectorAll('[data-pf-line-short]').forEach(inp => {
+      inp.oninput = () => {
+        const l = pfLines.find(x => x._id === inp.dataset.pfLineShort);
+        if (l) { l.shortName = inp.value || '__manual__'; }
       };
     });
 
@@ -3149,7 +3163,7 @@ function invOpenPIForm(editId) {
     if (pfProgCount() >= 3) { toast('Maximum 3 program lines (A, B, C) per invoice'); return; }
     // Insert before freight if it exists, otherwise at end
     const freightIdx = pfLines.findIndex(l => l._type === 'freight');
-    const newLine = { _id: uid(), _type: 'prog', desc: '', shortName: '', rate: 0, qty: 1, disc: 0 };
+    const newLine = { _id: uid(), _type: 'prog', desc: '', shortName: pfProducts.length ? '' : '__manual__', rate: 0, qty: 1, disc: 0 };
     if (freightIdx >= 0) pfLines.splice(freightIdx, 0, newLine);
     else pfLines.push(newLine);
     renderPfLines(); pfPreview();
@@ -3162,9 +3176,17 @@ function invOpenPIForm(editId) {
     renderPfLines(); pfPreview();
   };
 
-  // Wire Nature add button
+  // Wire Nature add button and OTHER manual input
   const pfNatureAddBtn = document.getElementById('pf-nature-add');
   if (pfNatureAddBtn) pfNatureAddBtn.onclick = () => invAddNature('pf-nature');
+  const pfNatureSel = document.getElementById('pf-nature');
+  const pfNatureManual = document.getElementById('pf-nature-manual');
+  if (pfNatureSel && pfNatureManual) {
+    pfNatureSel.onchange = () => {
+      pfNatureManual.style.display = pfNatureSel.value === '__other__' ? 'block' : 'none';
+      if (pfNatureSel.value === '__other__') pfNatureManual.focus();
+    };
+  }
 
   ['pf-client','pf-tds'].forEach(id => {
     const el = document.getElementById(id);
@@ -3232,12 +3254,93 @@ function invOpenPIForm(editId) {
 // ── Invoice form (TI) ──────────────────────────────────────
 function invOpenTIForm(fromPiId, editTiId, fromDashboard) {
   invInit();
-  // If called from dashboard, open the invoicing module first
   if (fromDashboard) {
     const overlay = document.getElementById('invoicingOverlay');
     if (overlay && overlay.style.display === 'none') openInvoicingModule();
   }
   const existingTI = editTiId ? DB.invoicing.taxInvoices.find(t => t.id === editTiId) : null;
+  const clients = DB.invoicing.clients;
+
+  if (!clients.length) {
+    toast('No clients found — add clients first (Invoicing tab → Clients)');
+    return;
+  }
+
+  // If we already have a source PI or existing TI, skip the YES/NO step
+  if (fromPiId || existingTI) {
+    _invOpenTIFormInner(fromPiId, existingTI);
+    return;
+  }
+
+  // ── Step 1: Ask "From existing PI?" ──────────────────────────
+  const openPIs = DB.invoicing.proformas
+    .filter(p => p.status !== 'cancelled' && p.status !== 'converted')
+    .sort((a, b) => (b.invNo||'').localeCompare(a.invNo||''));
+
+  const body = `
+    <div style="text-align:center; padding:10px 0 18px;">
+      <div style="font-size:15px; font-weight:700; color:var(--navy); margin-bottom:6px;">
+        Is this Tax Invoice based on an existing Proforma Invoice?
+      </div>
+      <div style="font-size:13px; color:var(--ink-soft);">
+        YES — pick a PI and auto-populate the details<br>
+        NO — create a fresh Tax Invoice
+      </div>
+    </div>
+    <div style="display:flex; gap:12px; justify-content:center;">
+      <button class="btn btn-primary" id="ti-from-pi-yes" style="min-width:100px; font-size:15px;">YES</button>
+      <button class="btn" id="ti-from-pi-no" style="min-width:100px; font-size:15px;">NO</button>
+    </div>`;
+
+  openModal('New Tax Invoice', body,
+    `<button class="btn" id="ti-step1-cancel">Cancel</button>`);
+
+  document.getElementById('ti-step1-cancel').onclick = closeModal;
+
+  document.getElementById('ti-from-pi-no').onclick = () => {
+    closeModal();
+    _invOpenTIFormInner(null, null);
+  };
+
+  document.getElementById('ti-from-pi-yes').onclick = () => {
+    // Show PI picker
+    if (!openPIs.length) {
+      toast('No open Proforma Invoices found — use NO to create a fresh TI');
+      return;
+    }
+    const pickerBody = `
+      <div class="hint" style="margin-bottom:12px;">Select the Proforma Invoice to convert to a Tax Invoice.</div>
+      <div style="max-height:360px; overflow-y:auto;">
+        ${openPIs.map(pi => `
+          <div class="sub-list-item" style="cursor:pointer; display:flex; align-items:center; gap:10px;"
+               data-pi-pick="${pi.id}">
+            <div style="flex:1;">
+              <div style="font-weight:700; color:var(--navy); font-size:13px;">${escapeHtml(pi.invNo)}</div>
+              <div style="font-size:12px; color:var(--ink-soft);">${escapeHtml(pi.clientName)} — ${pi.date} — ${fmtMoney(pi.gross)}</div>
+              ${pi.desc ? `<div style="font-size:11px; color:var(--ink-soft);">${escapeHtml(pi.desc.slice(0,60))}</div>` : ''}
+            </div>
+            <button class="btn btn-sm btn-primary" data-pi-pick="${pi.id}">Select →</button>
+          </div>`).join('')}
+      </div>`;
+
+    openModal('Select Proforma Invoice', pickerBody,
+      `<button class="btn" id="ti-pi-pick-back">← Back</button>`);
+
+    document.getElementById('ti-pi-pick-back').onclick = () => invOpenTIForm(null, null, false);
+
+    document.querySelectorAll('[data-pi-pick]').forEach(el => {
+      el.onclick = () => {
+        const piId = el.dataset.piPick;
+        closeModal();
+        _invOpenTIFormInner(piId, null);
+      };
+    });
+  };
+}
+
+// ── TI inner form — shared by both PI-sourced and fresh TI ────
+function _invOpenTIFormInner(fromPiId, existingTI) {
+  invInit();
   const sourcePi = fromPiId ? DB.invoicing.proformas.find(p => p.id === fromPiId) : null;
   const v = existingTI || sourcePi || {};
   const clients = DB.invoicing.clients;
@@ -3245,60 +3348,75 @@ function invOpenTIForm(fromPiId, editTiId, fromDashboard) {
   const fy = currentInvFY();
   const nextTiNum = `TI/${fy}/${String((DB.invoicing.tiSequence[fy]||0)+1).padStart(3,'0')}`;
 
-  if (!clients.length) {
-    toast('No clients found — please import or add clients first (Invoicing tab → Clients)');
-    return;
+  const pfProducts = DB.invoicing.products || [];
+  const offlineOnlineProds = pfProducts.filter(p => p.category !== 'OTHER');
+  const otherProds = pfProducts.filter(p => p.category === 'OTHER');
+
+  // Initialise line items from source
+  let tiLines = [];
+  if (existingTI && existingTI.lineItems && existingTI.lineItems.length) {
+    tiLines = existingTI.lineItems.map(l => ({ ...l, _id: uid() }));
+  } else if (sourcePi && sourcePi.lineItems && sourcePi.lineItems.length) {
+    tiLines = sourcePi.lineItems.map(l => ({ ...l, _id: uid() }));
+  } else if (v.desc) {
+    tiLines = [{ _id: uid(), _type: 'prog', desc: v.desc, shortName: v.unit||'__manual__', rate: v.rate||0, qty: v.qty||1, disc: v.disc||0 }];
+  } else {
+    tiLines = [{ _id: uid(), _type: 'prog', desc: '', shortName: pfProducts.length ? '' : '__manual__', rate: 0, qty: 1, disc: 0 }];
   }
 
-  // If converting from PI, pre-select that client and pre-fill
-  const preClient = v.clientId || '';
   const body = `
-    <div class="hint" style="background:#e8f0fb; margin-bottom:12px;">
-      ${sourcePi ? `Converting from ${escapeHtml(sourcePi.invNo)} → ` : ''}
-      ${existingTI ? `Editing ${escapeHtml(existingTI.invNo)}` : `Next TI number will be: <strong>${nextTiNum}</strong>`}
+    <div class="hint" style="background:#e8f0fb; margin-bottom:10px;">
+      ${sourcePi ? `<strong>From PI:</strong> ${escapeHtml(sourcePi.invNo)} — ${escapeHtml(sourcePi.clientName)} · ` : ''}
+      ${existingTI ? `Editing ${escapeHtml(existingTI.invNo)}` : `Next TI: <strong>${nextTiNum}</strong>`}
     </div>
     <div class="field-row">
       <div class="field"><label>Client</label>
         <select id="ti-client">${clients.map(c =>
-          `<option value="${c.id}" ${preClient===c.id?'selected':''}>${escapeHtml(c.shortName)} — ${escapeHtml(c.companyName)}</option>`
+          `<option value="${c.id}" ${(v.clientId||'')=== c.id?'selected':''}>${escapeHtml(c.shortName)} — ${escapeHtml(c.companyName)}</option>`
         ).join('')}</select>
       </div>
       <div class="field"><label>Invoice date</label>
-        <input type="date" id="ti-date" value="${existingTI ? existingTI.date : today}">
+        <input type="date" id="ti-date" value="${existingTI ? existingTI.date : today}"
+          onchange="document.getElementById('ti-supply').value=this.value">
       </div>
     </div>
     <div class="field-row">
       <div class="field"><label>Date of supply</label>
-        <input type="date" id="ti-supply" value="${v.supplyDate || today}">
+        <input type="date" id="ti-supply" value="${v.supplyDate || (existingTI ? existingTI.date : today)}">
       </div>
       <div class="field"><label>Payment terms</label>
         <input id="ti-terms" value="${escapeHtml(v.paymentTerms || 'Advance')}">
       </div>
     </div>
-    <div class="field"><label>Row A — Description</label>
-      <input id="ti-desc" value="${escapeHtml(v.desc || '')}"></div>
-    <div class="field-row">
-      <div class="field"><label>Row A — Unit</label><input id="ti-unit" value="${escapeHtml(v.unit || '')}"></div>
-      <div class="field"><label>Row A — Rate</label><input type="number" id="ti-rate" value="${v.rate || ''}"></div>
-      <div class="field"><label>Row A — Qty</label><input type="number" id="ti-qty" value="${v.qty || 1}"></div>
+
+    <!-- Dynamic line items (same as PI) -->
+    <div style="border:1px solid var(--line); border-radius:6px; padding:12px; margin-bottom:8px;">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+        <span style="font-size:12px; font-weight:700; color:var(--navy); text-transform:uppercase; letter-spacing:.05em;">Program / Service lines</span>
+        <div style="display:flex;gap:6px;">
+          <button type="button" id="ti-add-line" class="btn btn-sm">+ Add program</button>
+          <button type="button" id="ti-add-freight" class="btn btn-sm" style="background:var(--gold);border-color:var(--gold);color:#fff;">+ Add freight</button>
+        </div>
+      </div>
+      <div id="ti-lines-wrap"></div>
     </div>
-    <div class="field-row">
-      <div class="field"><label>Row A — Discount</label><input type="number" id="ti-disc" value="${v.disc || 0}"></div>
-      <div class="field"><label>Row A — SAC code</label><input id="ti-sac" value="${v.sac || '998399'}"></div>
-    </div>
+
     <div class="field-row">
       <div class="field"><label>Nature of invoice</label>
         <div style="display:flex;gap:6px;">
-          <select id="ti-nature" style="flex:1;" onchange="
-            const m=document.getElementById('ti-nature-manual');
-            if(m) m.style.display=this.value==='__other__'?'block':'none';
-          ">${invGetNatureOptions(v.nature||'')}</select>
-          <button type="button" id="ti-nature-add" class="btn btn-sm" title="Add new nature">+</button>
+          <select id="ti-nature" style="flex:1;">
+            ${invGetNatureOptions(v.nature||'')}
+          </select>
+          <button type="button" id="ti-nature-add" class="btn btn-sm" title="Add nature">+</button>
         </div>
         <input type="text" id="ti-nature-manual" placeholder="Enter nature manually"
           value="${v.nature && !invGetNatures().includes(v.nature) ? escapeHtml(v.nature) : ''}"
           style="margin-top:6px; width:100%; display:${(v.nature && !invGetNatures().includes(v.nature) && v.nature !== '') ? 'block' : 'none'};">
       </div>
+      <div class="field"><label>SAC code</label>
+        <input id="ti-sac" value="${v.sac || '998399'}"></div>
+    </div>
+    <div class="field-row">
       <div class="field"><label>TDS deducted?</label>
         <select id="ti-tds">
           <option value="no" ${(v.tdsDeducted||'no')==='no'?'selected':''}>No</option>
@@ -3309,68 +3427,211 @@ function invOpenTIForm(fromPiId, editTiId, fromDashboard) {
     <div id="ti-gst-preview" style="background:var(--paper); border-radius:6px; padding:10px 14px; font-size:12.5px; margin-top:4px;"></div>`;
 
   openModal(existingTI ? 'Edit Tax Invoice' : 'New Tax Invoice', body,
-    `<button class="btn" id="ti-cancel">Cancel</button><button class="btn btn-primary" id="ti-save">${existingTI ? 'Save changes' : 'Generate TI'}</button>`);
+    `<button class="btn" id="ti-cancel">${sourcePi ? '← Back' : 'Cancel'}</button>
+     <button class="btn btn-primary" id="ti-save">${existingTI ? 'Save changes' : 'Generate TI'}</button>`);
 
-  const preview = () => {
+  // ── Line rendering (mirrors PI form) ──────────────────────
+  function tiProgCount() { return tiLines.filter(l => l._type === 'prog').length; }
+  function tiHasFreight() { return tiLines.some(l => l._type === 'freight'); }
+
+  function renderTiLines() {
+    const wrap = document.getElementById('ti-lines-wrap');
+    if (!wrap) return;
+    const addBtn = document.getElementById('ti-add-line');
+    if (addBtn) { addBtn.disabled = tiProgCount() >= 3; addBtn.style.opacity = tiProgCount() >= 3 ? '0.5' : '1'; }
+    const freightBtn = document.getElementById('ti-add-freight');
+    if (freightBtn) { freightBtn.disabled = tiHasFreight(); freightBtn.style.opacity = tiHasFreight() ? '0.5' : '1'; }
+
+    let progIdx = 0;
+    const labels = tiLines.map(l => {
+      const label = String.fromCharCode(65 + progIdx++);
+      return label;
+    });
+
+    wrap.innerHTML = tiLines.map((line, i) => {
+      const label = labels[i];
+      const isFreight = line._type === 'freight';
+      const canDelete = tiLines.length > 1 || isFreight;
+      const selectedProd = pfProducts.find(p => p.shortName === line.shortName);
+      const isManual = !selectedProd || line.shortName === '__manual__' || !line.shortName;
+
+      if (isFreight) return `
+        <div style="border:1px solid #dda63a; border-radius:5px; padding:10px; margin-bottom:8px; background:#fffbf0;" data-ti-line="${line._id}">
+          <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:6px;">
+            <span style="font-size:11px; font-weight:700; color:#9a6b14;">ROW ${label} — Freight / Courier</span>
+            <button type="button" data-ti-del-line="${line._id}" style="border:none;background:none;color:#aab2bd;cursor:pointer;font-size:13px;">✕</button>
+          </div>
+          <div style="display:flex;gap:8px;">
+            <div class="field" style="flex:2;margin:0"><label style="font-size:11px;">Description</label>
+              <input type="text" data-ti-line-desc="${line._id}" value="${escapeHtml(line.desc||'Freight / Courier charges')}" style="width:100%;"></div>
+            <div class="field" style="flex:1;margin:0"><label style="font-size:11px;">Amount (₹)</label>
+              <input type="number" data-ti-line-rate="${line._id}" value="${line.rate||''}" placeholder="0"></div>
+          </div>
+        </div>`;
+
+      return `
+        <div style="border:1px solid ${isManual?'#9a6b14':'var(--line)'}; border-radius:5px; padding:10px; margin-bottom:8px; background:${isManual?'#fffbf0':'var(--paper)'};" data-ti-line="${line._id}">
+          <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px;">
+            <span style="font-size:11px; font-weight:700; color:var(--navy);">ROW ${label}</span>
+            ${canDelete ? `<button type="button" data-ti-del-line="${line._id}" style="border:none;background:none;color:#aab2bd;cursor:pointer;font-size:13px;">✕</button>` : ''}
+          </div>
+          ${pfProducts.length ? `
+          <div class="field" style="margin-bottom:8px;">
+            <label style="font-size:11px;">Program (or choose Enter manually for one-off)</label>
+            <select data-ti-line-prog="${line._id}" style="width:100%; font-size:13px;">
+              <option value="">— Select —</option>
+              ${offlineOnlineProds.length ? `<optgroup label="OFFLINE / ONLINE">
+                ${offlineOnlineProds.map(p => `<option value="${p.shortName}" ${p.shortName===line.shortName?'selected':''}>${escapeHtml(p.shortName)} — ${escapeHtml(p.longName)}</option>`).join('')}
+              </optgroup>` : ''}
+              ${otherProds.length ? `<optgroup label="OTHER">
+                ${otherProds.map(p => `<option value="${p.shortName}" ${p.shortName===line.shortName?'selected':''}>${escapeHtml(p.shortName)} — ${escapeHtml(p.longName)}</option>`).join('')}
+              </optgroup>` : ''}
+              <option value="__manual__" ${isManual?'selected':''}>— Enter manually —</option>
+            </select>
+          </div>` : ''}
+          <div style="display:flex;gap:8px;margin-bottom:8px;">
+            <div class="field" style="flex:0 0 120px;margin:0">
+              <label style="font-size:11px;">Short name${isManual?' <span style="color:#9a6b14;font-weight:700;">(type here)</span>':''}</label>
+              <input type="text" data-ti-line-short="${line._id}"
+                value="${escapeHtml(isManual ? (line.shortName==='__manual__'?'':line.shortName||'') : line.shortName||'')}"
+                placeholder="${isManual?'e.g. EPP':'auto-filled'}"
+                style="${isManual?'border-color:#9a6b14;background:#fff8f0;':'background:var(--paper-dim,#f5f5f5);color:var(--ink-soft);'}"
+                ${!isManual ? 'readonly' : ''}>
+            </div>
+            <div class="field" style="flex:1;margin:0"><label style="font-size:11px;">Rate (₹)</label>
+              <input type="number" data-ti-line-rate="${line._id}" value="${line.rate||''}" placeholder="0"></div>
+            <div class="field" style="flex:0 0 80px;margin:0"><label style="font-size:11px;">Qty</label>
+              <input type="number" data-ti-line-qty="${line._id}" value="${line.qty||1}" min="1"></div>
+          </div>
+          <div class="field" style="margin:0">
+            <label style="font-size:11px;">Description${isManual?' <span style="color:#9a6b14;font-weight:700;">(type here)</span>':' (auto-filled, editable)'}</label>
+            <input type="text" data-ti-line-desc="${line._id}" value="${escapeHtml(line.desc||'')}"
+              placeholder="${isManual?'Enter full description':'Auto-filled from product'}">
+          </div>
+        </div>`;
+    }).join('');
+
+    // Wire all TI line inputs
+    wrap.querySelectorAll('[data-ti-del-line]').forEach(b => {
+      b.onclick = () => { tiLines = tiLines.filter(l => l._id !== b.dataset.tiDelLine); renderTiLines(); tiPreview(); };
+    });
+    wrap.querySelectorAll('[data-ti-line-prog]').forEach(sel => {
+      sel.onchange = () => {
+        const l = tiLines.find(x => x._id === sel.dataset.tiLineProg);
+        if (!l) return;
+        l.shortName = sel.value;
+        if (sel.value && sel.value !== '__manual__') {
+          const prod = pfProducts.find(p => p.shortName === sel.value);
+          if (prod) { l.rate = prod.rate; l.desc = prod.category === 'OTHER' ? prod.longName : `Sale of ${prod.longName}`; }
+        } else { l.desc = ''; l.rate = 0; }
+        renderTiLines(); tiPreview();
+      };
+    });
+    wrap.querySelectorAll('[data-ti-line-short]').forEach(inp => {
+      inp.oninput = () => { const l = tiLines.find(x => x._id === inp.dataset.tiLineShort); if (l) l.shortName = inp.value || '__manual__'; };
+    });
+    wrap.querySelectorAll('[data-ti-line-desc]').forEach(inp => {
+      inp.oninput = () => { const l = tiLines.find(x => x._id === inp.dataset.tiLineDesc); if (l) { l.desc = inp.value; tiPreview(); } };
+    });
+    wrap.querySelectorAll('[data-ti-line-rate]').forEach(inp => {
+      inp.oninput = () => { const l = tiLines.find(x => x._id === inp.dataset.tiLineRate); if (l) { l.rate = parseFloat(inp.value)||0; tiPreview(); } };
+    });
+    wrap.querySelectorAll('[data-ti-line-qty]').forEach(inp => {
+      inp.oninput = () => { const l = tiLines.find(x => x._id === inp.dataset.tiLineQty); if (l) { l.qty = parseFloat(inp.value)||1; tiPreview(); } };
+    });
+  }
+
+  const tiPreview = () => {
     const cid = document.getElementById('ti-client').value;
     const cl = clients.find(c => c.id === cid);
-    const rate = parseFloat(document.getElementById('ti-rate').value) || 0;
-    const qty = parseFloat(document.getElementById('ti-qty').value) || 1;
-    const disc = parseFloat(document.getElementById('ti-disc').value) || 0;
-    const tdsDeducted = document.getElementById('ti-tds') ? document.getElementById('ti-tds').value : 'no';
-    const net = rate * qty;
-    const taxable = net - disc;
+    const tds = document.getElementById('ti-tds') ? document.getElementById('ti-tds').value : 'no';
+    const taxable = tiLines.reduce((s, l) => {
+      if (l._type === 'freight') return s + (l.rate||0);
+      return s + ((l.rate||0)*(l.qty||1)) - (l.disc||0);
+    }, 0);
     const type = cl ? gstType(cl.state) : 'igst';
     const intra = type === 'intra';
-    const cgst = intra ? taxable * 0.09 : 0;
-    const sgst = intra ? taxable * 0.09 : 0;
-    const igst = intra ? 0 : taxable * 0.18;
+    const cgst = intra ? taxable*0.09 : 0;
+    const sgst = intra ? taxable*0.09 : 0;
+    const igst = intra ? 0 : taxable*0.18;
     const gross = taxable + cgst + sgst + igst;
-    const receivable = invCalcReceivable(taxable, type, tdsDeducted);
+    const receivable = invCalcReceivable(taxable, type, tds);
     const gstLabel = intra ? 'CGST 9% + SGST 9%' : 'IGST 18%';
-    const tdsNote = tdsDeducted === 'yes'
+    const tdsNote = tds === 'yes'
       ? ` | TDS 10% = ${fmtMoney(taxable*0.1)} | <strong>Receivable: ${fmtMoney(receivable)}</strong>`
       : ` | <strong>Receivable: ${fmtMoney(receivable)}</strong>`;
-    document.getElementById('ti-gst-preview').innerHTML =
-      `<b>Preview:</b> Taxable ${fmtMoney(taxable)} + ${gstLabel} = Gross ${fmtMoney(gross)}${tdsNote}`;
-    return { net, disc, taxable, cgst, sgst, igst, gross, type, tdsDeducted, receivable };
+    const el = document.getElementById('ti-gst-preview');
+    if (el) el.innerHTML = `<b>Preview:</b> Taxable ${fmtMoney(taxable)} + ${gstLabel} = Gross ${fmtMoney(gross)}${tdsNote}`;
+    return { taxable, cgst, sgst, igst, gross, type, tdsDeducted: tds, receivable };
   };
-  ['ti-client','ti-rate','ti-qty','ti-disc','ti-tds'].forEach(id => {
-    const el = document.getElementById(id);
-    if (el) el.addEventListener('input', preview);
-    if (el && el.tagName === 'SELECT') el.addEventListener('change', preview);
-  });
-  preview();
+
+  renderTiLines();
+  tiPreview();
+
+  document.getElementById('ti-add-line').onclick = () => {
+    if (tiProgCount() >= 3) { toast('Maximum 3 program lines (A, B, C)'); return; }
+    const fi = tiLines.findIndex(l => l._type === 'freight');
+    const nl = { _id: uid(), _type: 'prog', desc: '', shortName: pfProducts.length ? '' : '__manual__', rate: 0, qty: 1, disc: 0 };
+    if (fi >= 0) tiLines.splice(fi, 0, nl); else tiLines.push(nl);
+    renderTiLines(); tiPreview();
+  };
+  document.getElementById('ti-add-freight').onclick = () => {
+    if (tiHasFreight()) { toast('Freight line already added'); return; }
+    tiLines.push({ _id: uid(), _type: 'freight', desc: 'Freight / Courier charges', rate: 0, qty: 1, disc: 0 });
+    renderTiLines(); tiPreview();
+  };
 
   const tiNatureBtn = document.getElementById('ti-nature-add');
   if (tiNatureBtn) tiNatureBtn.onclick = () => invAddNature('ti-nature');
+  const tiNatureSel = document.getElementById('ti-nature');
+  const tiNatureManual = document.getElementById('ti-nature-manual');
+  if (tiNatureSel && tiNatureManual) {
+    tiNatureSel.onchange = () => {
+      tiNatureManual.style.display = tiNatureSel.value === '__other__' ? 'block' : 'none';
+      if (tiNatureSel.value === '__other__') tiNatureManual.focus();
+    };
+  }
 
-  document.getElementById('ti-cancel').onclick = closeModal;
+  ['ti-client','ti-tds'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.addEventListener('change', tiPreview);
+  });
+
+  document.getElementById('ti-cancel').onclick = () => {
+    closeModal();
+    if (sourcePi) invOpenTIForm(null, null, false); // back to YES/NO
+  };
+
   document.getElementById('ti-save').onclick = () => {
     const cid = document.getElementById('ti-client').value;
     const cl = clients.find(c => c.id === cid);
     if (!cl) { toast('Select a client'); return; }
-    const desc = document.getElementById('ti-desc').value.trim();
-    if (!desc) { toast('Description is required'); return; }
-    const calc = preview();
+    if (!tiLines.length || (!tiLines[0].desc.trim() && tiLines[0]._type !== 'freight')) {
+      toast('At least one line item with a description is required'); return;
+    }
+    const calc = tiPreview();
     const natureRaw = document.getElementById('ti-nature') ? document.getElementById('ti-nature').value : '';
     const nature = natureRaw === '__other__'
       ? (document.getElementById('ti-nature-manual') ? document.getElementById('ti-nature-manual').value.trim() : '')
       : natureRaw;
-    const tdsDeducted = document.getElementById('ti-tds') ? document.getElementById('ti-tds').value : 'no';
+    const firstLine = tiLines[0];
     const rec = {
       id: existingTI ? existingTI.id : uid(),
       invNo: existingTI ? existingTI.invNo : nextTINumber(),
       date: document.getElementById('ti-date').value,
-      supplyDate: document.getElementById('ti-supply').value,
+      supplyDate: document.getElementById('ti-supply').value || document.getElementById('ti-date').value,
       paymentTerms: document.getElementById('ti-terms').value,
-      nature, tdsDeducted,
+      nature, tdsDeducted: calc.tdsDeducted,
       clientId: cid, clientName: cl.companyName, clientShort: cl.shortName,
-      desc, unit: document.getElementById('ti-unit').value,
-      rate: parseFloat(document.getElementById('ti-rate').value) || 0,
-      qty: parseFloat(document.getElementById('ti-qty').value) || 1,
+      lineItems: tiLines.map(l => ({
+        _type: l._type || 'prog',
+        desc: l.desc, shortName: l.shortName || '',
+        rate: l.rate, qty: l._type === 'freight' ? 1 : (l.qty||1), disc: l.disc||0,
+      })),
+      desc: tiLines.filter(l=>l._type!=='freight').map(l=>l.desc).filter(Boolean).join('; '),
+      unit: firstLine.shortName || '', rate: firstLine.rate, qty: firstLine.qty||1,
       sac: document.getElementById('ti-sac').value || '998399',
-      disc: calc.disc,
+      disc: tiLines.reduce((s,l)=>s+(l.disc||0),0),
       taxable: calc.taxable, cgst: calc.cgst, sgst: calc.sgst,
       igst: calc.igst, gross: calc.gross, gstType: calc.type,
       receivableAmount: calc.receivable,
@@ -3381,9 +3642,7 @@ function invOpenTIForm(fromPiId, editTiId, fromDashboard) {
     if (existingTI) {
       const oldRecv = existingTI.receivableAmount || existingTI.gross;
       Object.assign(existingTI, rec);
-      if (oldRecv !== rec.receivableAmount) {
-        invUpdateReceivableAmount(rec.invNo, rec.receivableAmount);
-      }
+      if (oldRecv !== rec.receivableAmount) invUpdateReceivableAmount(rec.invNo, rec.receivableAmount);
     } else {
       DB.invoicing.taxInvoices.push(rec);
       if (sourcePi) {

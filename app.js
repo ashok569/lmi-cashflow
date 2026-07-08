@@ -1,6 +1,6 @@
 /* ===========================================================
    LMI Cashflow Manager — application logic
-   VERSION 2.4.2 — adds: Product master (ADD PRODUCT, PRODUCT LIST, CSV import, OFFLINE/ONLINE/OTHER categories, MOVE button), multi-line invoice items (Add another program), dynamic Word doc (landscape, LMI South Asia header, QTY column, no freight row, multi-item rows), delete receivable PI ripple, date of supply pre-fill, cancel invoice retains delete button. — fix: Word download uses Packer.toBlob (browser-compatible) instead of Packer.toBuffer (Node-only); fix dataset.invWord reference; invBuildWordDoc returns Document not Buffer. — edit PI/TI syncs cashflow receivable amount; cancel vs permanent delete modal; invUpdateReceivableAmount() — header updated to match actual LMI India letterhead (LMI INDIA branding, Apeejay House address, CIN, email/web/tel, logo placeholder), footer updated.
+   VERSION 2.4.4 — new LMI South Asia header image; Nature OTHER manual entry on PI+TI; email templates (PI: Nirali standard, TI: Nirali standard) with live template switcher; PROGRAM dropdown with auto-fill from product list; Add Freight button; max 3 program rows — adds: Product master (ADD PRODUCT, PRODUCT LIST, CSV import, OFFLINE/ONLINE/OTHER categories, MOVE button), multi-line invoice items (Add another program), dynamic Word doc (landscape, LMI South Asia header, QTY column, no freight row, multi-item rows), delete receivable PI ripple, date of supply pre-fill, cancel invoice retains delete button. — fix: Word download uses Packer.toBlob (browser-compatible) instead of Packer.toBuffer (Node-only); fix dataset.invWord reference; invBuildWordDoc returns Document not Buffer. — edit PI/TI syncs cashflow receivable amount; cancel vs permanent delete modal; invUpdateReceivableAmount() — header updated to match actual LMI India letterhead (LMI INDIA branding, Apeejay House address, CIN, email/web/tel, logo placeholder), footer updated.
    doc output matching exact template layout (15-col table,
    all fields, borders, amounts in words), next number preview,
    invoicing module auto-opens from dashboard buttons.
@@ -2603,9 +2603,12 @@ function invGetNatures() {
 
 function invGetNatureOptions(selected) {
   const natures = invGetNatures();
-  return natures.map(n =>
+  const opts = natures.map(n =>
     `<option value="${escapeHtml(n)}" ${n === selected ? 'selected' : ''}>${escapeHtml(n)}</option>`
   ).join('');
+  // Always include OTHER as last option — triggers manual entry
+  const otherSel = selected === '__other__' ? 'selected' : '';
+  return opts + `<option value="__other__" ${otherSel}>OTHER (manual entry)</option>`;
 }
 
 function invAddNature(currentSelectId) {
@@ -2685,7 +2688,10 @@ function invOpenPIForm(editId) {
     <div style="border:1px solid var(--line); border-radius:6px; padding:12px; margin-bottom:8px;">
       <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
         <span style="font-size:12px; font-weight:700; color:var(--navy); text-transform:uppercase; letter-spacing:.05em;">Program / Service lines</span>
-        <button type="button" id="pf-add-line" class="btn btn-sm">+ Add another program</button>
+        <div style="display:flex;gap:6px;">
+          <button type="button" id="pf-add-line" class="btn btn-sm">+ Add program</button>
+          <button type="button" id="pf-add-freight" class="btn btn-sm" style="background:var(--gold);border-color:var(--gold);color:#fff;">+ Add freight</button>
+        </div>
       </div>
       <div id="pf-lines-wrap"></div>
     </div>
@@ -2693,11 +2699,17 @@ function invOpenPIForm(editId) {
     <div class="field-row">
       <div class="field"><label>Nature of invoice</label>
         <div style="display:flex;gap:6px;">
-          <select id="pf-nature" style="flex:1;">
+          <select id="pf-nature" style="flex:1;" onchange="
+            const m=document.getElementById('pf-nature-manual');
+            if(m) m.style.display=this.value==='__other__'?'block':'none';
+          ">
             ${invGetNatureOptions(v.nature||'')}
           </select>
           <button type="button" id="pf-nature-add" class="btn btn-sm" title="Add new nature">+</button>
         </div>
+        <input type="text" id="pf-nature-manual" placeholder="Enter nature manually"
+          value="${v.nature && !invGetNatures().includes(v.nature) ? escapeHtml(v.nature) : ''}"
+          style="margin-top:6px; width:100%; display:${(v.nature && !invGetNatures().includes(v.nature) && v.nature !== '') ? 'block' : 'none'};">
       </div>
       <div class="field"><label>SAC code</label>
         <input id="pf-sac" value="${v.sac || '998399'}"></div>
@@ -2717,45 +2729,120 @@ function invOpenPIForm(editId) {
     `<button class="btn" id="pf-cancel">Cancel</button><button class="btn btn-primary" id="pf-save">${existing ? 'Save changes' : 'Generate PI'}</button>`);
 
   // Initialise line items from existing data or blank
-  let pfLines = (existing && existing.lineItems && existing.lineItems.length)
-    ? existing.lineItems.map(l => ({ ...l, _id: uid() }))
-    : [{ _id: uid(), desc: v.desc||'', unit: v.unit||'', rate: v.rate||0, qty: v.qty||1, disc: v.disc||0 }];
+  // Each line has: _id, _type ('prog'|'freight'), desc, shortName, rate, qty, disc
+  let pfLines = [];
+  if (existing && existing.lineItems && existing.lineItems.length) {
+    pfLines = existing.lineItems.map(l => ({
+      ...l, _id: uid(),
+      _type: (l._type === 'freight' || l.desc === 'Freight / Courier charges') ? 'freight' : 'prog'
+    }));
+  } else {
+    pfLines = [{ _id: uid(), _type: 'prog', desc: '', shortName: '', rate: 0, qty: 1, disc: 0 }];
+  }
 
   const pfProducts = DB.invoicing.products || [];
+  const offlineOnlineProds = pfProducts.filter(p => p.category !== 'OTHER');
+  const otherProds = pfProducts.filter(p => p.category === 'OTHER');
+
+  function pfProgCount() { return pfLines.filter(l => l._type === 'prog').length; }
+  function pfHasFreight() { return pfLines.some(l => l._type === 'freight'); }
 
   function renderPfLines() {
     const wrap = document.getElementById('pf-lines-wrap');
     if (!wrap) return;
-    wrap.innerHTML = pfLines.map((line, i) => `
-      <div style="border:1px solid var(--line); border-radius:5px; padding:10px; margin-bottom:8px; background:var(--paper);" data-pf-line="${line._id}">
-        <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:6px;">
-          <span style="font-size:11px; font-weight:700; color:var(--ink-soft);">ROW ${String.fromCharCode(65+i)}</span>
-          ${pfLines.length > 1 ? `<button type="button" data-pf-del-line="${line._id}" style="border:none;background:none;color:#aab2bd;cursor:pointer;font-size:13px;">✕</button>` : ''}
-        </div>
-        <div class="field" style="margin-bottom:6px;">
-          <label style="font-size:11px;">Description</label>
-          <div style="display:flex;gap:6px;">
-            <input type="text" data-pf-line-desc="${line._id}" value="${escapeHtml(line.desc||'')}"
-              placeholder="e.g. Sale of EPP programs" style="flex:1;">
-            ${pfProducts.length ? `<select data-pf-line-pick="${line._id}" style="width:140px; font-size:12px;">
-              <option value="">Pick product…</option>
-              ${pfProducts.map(p => `<option value="${p.id}">${escapeHtml(p.shortName)}</option>`).join('')}
-            </select>` : ''}
-          </div>
-        </div>
-        <div style="display:flex;gap:8px;">
-          <div class="field" style="flex:1;margin:0"><label style="font-size:11px;">Unit</label>
-            <input type="text" data-pf-line-unit="${line._id}" value="${escapeHtml(line.unit||'')}" placeholder="e.g. EPP"></div>
-          <div class="field" style="flex:1;margin:0"><label style="font-size:11px;">Rate (₹)</label>
-            <input type="number" data-pf-line-rate="${line._id}" value="${line.rate||''}"></div>
-          <div class="field" style="flex:1;margin:0"><label style="font-size:11px;">Qty</label>
-            <input type="number" data-pf-line-qty="${line._id}" value="${line.qty||1}"></div>
-          <div class="field" style="flex:1;margin:0"><label style="font-size:11px;">Discount (₹)</label>
-            <input type="number" data-pf-line-disc="${line._id}" value="${line.disc||0}"></div>
-        </div>
-      </div>`).join('');
 
-    // Wire delete line buttons
+    // Update Add program button — disabled at 3 program lines
+    const addBtn = document.getElementById('pf-add-line');
+    if (addBtn) {
+      const progCount = pfProgCount();
+      addBtn.disabled = progCount >= 3;
+      addBtn.title = progCount >= 3 ? 'Maximum 3 program lines (A, B, C)' : '';
+      addBtn.style.opacity = progCount >= 3 ? '0.5' : '1';
+    }
+    // Update Add freight button — disabled if already has freight
+    const freightBtn = document.getElementById('pf-add-freight');
+    if (freightBtn) {
+      freightBtn.disabled = pfHasFreight();
+      freightBtn.style.opacity = pfHasFreight() ? '0.5' : '1';
+      freightBtn.title = pfHasFreight() ? 'Freight already added' : 'Add freight / courier line';
+    }
+
+    // Build row labels — A, B, C for programs, then freight gets next letter
+    let progIdx = 0, freightLabel = '';
+    const labels = pfLines.map(l => {
+      if (l._type === 'prog') return String.fromCharCode(65 + progIdx++);
+      freightLabel = String.fromCharCode(65 + progIdx++);
+      return freightLabel;
+    });
+    // Reset progIdx for actual program count
+    progIdx = 0;
+
+    wrap.innerHTML = pfLines.map((line, i) => {
+      const label = labels[i];
+      const isFreight = line._type === 'freight';
+      const canDelete = pfLines.length > 1 || isFreight;
+
+      if (isFreight) {
+        // Freight row — simple amount entry
+        return `
+          <div style="border:1px solid #dda63a; border-radius:5px; padding:10px; margin-bottom:8px; background:#fffbf0;" data-pf-line="${line._id}">
+            <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:6px;">
+              <span style="font-size:11px; font-weight:700; color:#9a6b14;">ROW ${label} — Freight / Courier</span>
+              <button type="button" data-pf-del-line="${line._id}" style="border:none;background:none;color:#aab2bd;cursor:pointer;font-size:13px;">✕</button>
+            </div>
+            <div style="display:flex;gap:8px;align-items:center;">
+              <div class="field" style="flex:2;margin:0"><label style="font-size:11px;">Description</label>
+                <input type="text" data-pf-line-desc="${line._id}" value="${escapeHtml(line.desc||'Freight / Courier charges')}" style="width:100%;"></div>
+              <div class="field" style="flex:1;margin:0"><label style="font-size:11px;">Amount (₹)</label>
+                <input type="number" data-pf-line-rate="${line._id}" value="${line.rate||''}" placeholder="0"></div>
+            </div>
+          </div>`;
+      }
+
+      // Program row — PROGRAM dropdown + Qty + Rate
+      const allProds = pfProducts;
+      const selectedProd = allProds.find(p => p.shortName === line.shortName);
+      const isOther = selectedProd && selectedProd.category === 'OTHER';
+      const isManual = !selectedProd && line.shortName === '__manual__';
+
+      return `
+        <div style="border:1px solid var(--line); border-radius:5px; padding:10px; margin-bottom:8px; background:var(--paper);" data-pf-line="${line._id}">
+          <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:6px;">
+            <span style="font-size:11px; font-weight:700; color:var(--navy);">ROW ${label}</span>
+            ${canDelete ? `<button type="button" data-pf-del-line="${line._id}" style="border:none;background:none;color:#aab2bd;cursor:pointer;font-size:13px;">✕</button>` : ''}
+          </div>
+          <div style="display:flex;gap:8px;margin-bottom:6px;">
+            <div class="field" style="flex:1;margin:0">
+              <label style="font-size:11px;">Program</label>
+              <select data-pf-line-prog="${line._id}" style="width:100%; font-size:13px;">
+                <option value="">— Select program —</option>
+                ${offlineOnlineProds.length ? `<optgroup label="OFFLINE / ONLINE">
+                  ${offlineOnlineProds.map(p => `<option value="${p.shortName}" ${p.shortName===line.shortName?'selected':''}>${escapeHtml(p.shortName)} — ${escapeHtml(p.longName)}</option>`).join('')}
+                </optgroup>` : ''}
+                ${otherProds.length ? `<optgroup label="OTHER">
+                  ${otherProds.map(p => `<option value="${p.shortName}" ${p.shortName===line.shortName?'selected':''}>${escapeHtml(p.shortName)} — ${escapeHtml(p.longName)}</option>`).join('')}
+                </optgroup>` : ''}
+                <option value="__manual__" ${line.shortName==='__manual__'?'selected':''}>— Enter manually —</option>
+              </select>
+            </div>
+            <div class="field" style="flex:1;margin:0">
+              <label style="font-size:11px;">Rate (₹) per program</label>
+              <input type="number" data-pf-line-rate="${line._id}" value="${line.rate||''}" placeholder="Auto-filled from product">
+            </div>
+            <div class="field" style="flex:0 0 90px;margin:0">
+              <label style="font-size:11px;">Qty (number)</label>
+              <input type="number" data-pf-line-qty="${line._id}" value="${line.qty||1}" min="1">
+            </div>
+          </div>
+          <div class="field" style="margin:0">
+            <label style="font-size:11px;">Description (auto-filled, editable)</label>
+            <input type="text" data-pf-line-desc="${line._id}" value="${escapeHtml(line.desc||'')}"
+              placeholder="${isOther||isManual ? 'Enter description manually' : 'Auto-filled when program selected'}">
+          </div>
+        </div>`;
+    }).join('');
+
+    // Wire delete
     wrap.querySelectorAll('[data-pf-del-line]').forEach(b => {
       b.onclick = () => {
         pfLines = pfLines.filter(l => l._id !== b.dataset.pfDelLine);
@@ -2763,32 +2850,49 @@ function invOpenPIForm(editId) {
       };
     });
 
-    // Wire input changes
-    wrap.querySelectorAll('[data-pf-line-desc]').forEach(inp => {
-      inp.oninput = () => { const l = pfLines.find(x => x._id===inp.dataset.pfLineDesc); if(l){l.desc=inp.value;} pfPreview(); };
-    });
-    wrap.querySelectorAll('[data-pf-line-unit]').forEach(inp => {
-      inp.oninput = () => { const l = pfLines.find(x => x._id===inp.dataset.pfLineUnit); if(l){l.unit=inp.value;} };
-    });
-    wrap.querySelectorAll('[data-pf-line-rate]').forEach(inp => {
-      inp.oninput = () => { const l = pfLines.find(x => x._id===inp.dataset.pfLineRate); if(l){l.rate=parseFloat(inp.value)||0;} pfPreview(); };
-    });
-    wrap.querySelectorAll('[data-pf-line-qty]').forEach(inp => {
-      inp.oninput = () => { const l = pfLines.find(x => x._id===inp.dataset.pfLineQty); if(l){l.qty=parseFloat(inp.value)||1;} pfPreview(); };
-    });
-    wrap.querySelectorAll('[data-pf-line-disc]').forEach(inp => {
-      inp.oninput = () => { const l = pfLines.find(x => x._id===inp.dataset.pfLineDisc); if(l){l.disc=parseFloat(inp.value)||0;} pfPreview(); };
+    // Wire program selector
+    wrap.querySelectorAll('[data-pf-line-prog]').forEach(sel => {
+      sel.onchange = () => {
+        const val = sel.value;
+        const l = pfLines.find(x => x._id === sel.dataset.pfLineProg);
+        if (!l) return;
+        l.shortName = val;
+        if (val === '__manual__' || !val) {
+          l.desc = '';
+          l.rate = 0;
+        } else {
+          const prod = pfProducts.find(p => p.shortName === val);
+          if (prod) {
+            l.rate = prod.rate;
+            // OTHER category: auto-fill description but editable; others: "Sale of [longname]"
+            l.desc = prod.category === 'OTHER' ? prod.longName : `Sale of ${prod.longName}`;
+          }
+        }
+        renderPfLines(); pfPreview();
+      };
     });
 
-    // Wire product picker
-    wrap.querySelectorAll('[data-pf-line-pick]').forEach(sel => {
-      sel.onchange = () => {
-        const prod = pfProducts.find(p => p.id === sel.value);
-        if (!prod) return;
-        const l = pfLines.find(x => x._id === sel.dataset.pfLinePick);
-        if (!l) return;
-        l.desc = prod.longName; l.unit = prod.shortName; l.rate = prod.rate;
-        renderPfLines(); pfPreview();
+    // Wire desc input (manual edit)
+    wrap.querySelectorAll('[data-pf-line-desc]').forEach(inp => {
+      inp.oninput = () => {
+        const l = pfLines.find(x => x._id === inp.dataset.pfLineDesc);
+        if (l) { l.desc = inp.value; pfPreview(); }
+      };
+    });
+
+    // Wire rate input
+    wrap.querySelectorAll('[data-pf-line-rate]').forEach(inp => {
+      inp.oninput = () => {
+        const l = pfLines.find(x => x._id === inp.dataset.pfLineRate);
+        if (l) { l.rate = parseFloat(inp.value) || 0; pfPreview(); }
+      };
+    });
+
+    // Wire qty input
+    wrap.querySelectorAll('[data-pf-line-qty]').forEach(inp => {
+      inp.oninput = () => {
+        const l = pfLines.find(x => x._id === inp.dataset.pfLineQty);
+        if (l) { l.qty = parseFloat(inp.value) || 1; pfPreview(); }
       };
     });
   }
@@ -2797,7 +2901,11 @@ function invOpenPIForm(editId) {
     const cid = document.getElementById('pf-client').value;
     const cl = clients.find(c => c.id === cid);
     const tdsDeducted = document.getElementById('pf-tds') ? document.getElementById('pf-tds').value : 'no';
-    const linesTaxable = pfLines.reduce((s, l) => s + (l.rate*(l.qty||1)) - (l.disc||0), 0);
+    // Programs: rate × qty. Freight: just the rate value (qty=1)
+    const linesTaxable = pfLines.reduce((s, l) => {
+      if (l._type === 'freight') return s + (l.rate || 0);
+      return s + ((l.rate||0) * (l.qty||1)) - (l.disc||0);
+    }, 0);
     const taxable = linesTaxable;
     const type = cl ? gstType(cl.state) : 'igst';
     const intra = type === 'intra';
@@ -2818,8 +2926,21 @@ function invOpenPIForm(editId) {
   renderPfLines();
   pfPreview();
 
+  // Add program button — max 3 program rows
   document.getElementById('pf-add-line').onclick = () => {
-    pfLines.push({ _id: uid(), desc: '', unit: '', rate: 0, qty: 1, disc: 0 });
+    if (pfProgCount() >= 3) { toast('Maximum 3 program lines (A, B, C) per invoice'); return; }
+    // Insert before freight if it exists, otherwise at end
+    const freightIdx = pfLines.findIndex(l => l._type === 'freight');
+    const newLine = { _id: uid(), _type: 'prog', desc: '', shortName: '', rate: 0, qty: 1, disc: 0 };
+    if (freightIdx >= 0) pfLines.splice(freightIdx, 0, newLine);
+    else pfLines.push(newLine);
+    renderPfLines(); pfPreview();
+  };
+
+  // Add freight button — only one freight row, always goes at end
+  document.getElementById('pf-add-freight').onclick = () => {
+    if (pfHasFreight()) { toast('Freight line already added'); return; }
+    pfLines.push({ _id: uid(), _type: 'freight', desc: 'Freight / Courier charges', rate: 0, qty: 1, disc: 0 });
     renderPfLines(); pfPreview();
   };
 
@@ -2842,7 +2963,10 @@ function invOpenPIForm(editId) {
     const calc = pfPreview();
     // desc/unit/rate for backward compat (first line item)
     const firstLine = pfLines[0];
-    const nature = document.getElementById('pf-nature') ? document.getElementById('pf-nature').value : '';
+    const natureRaw = document.getElementById('pf-nature') ? document.getElementById('pf-nature').value : '';
+    const nature = natureRaw === '__other__'
+      ? (document.getElementById('pf-nature-manual') ? document.getElementById('pf-nature-manual').value.trim() : '')
+      : natureRaw;
     const tdsDeducted = document.getElementById('pf-tds') ? document.getElementById('pf-tds').value : 'no';
     const rec = {
       id: existing ? existing.id : uid(),
@@ -2852,8 +2976,15 @@ function invOpenPIForm(editId) {
       paymentTerms: document.getElementById('pf-terms').value,
       nature, tdsDeducted,
       clientId: cid, clientName: cl.companyName, clientShort: cl.shortName,
-      // Multi-line items
-      lineItems: pfLines.map(l => ({ desc: l.desc, unit: l.unit, rate: l.rate, qty: l.qty||1, disc: l.disc||0 })),
+      // Multi-line items — preserve _type for freight rows
+      lineItems: pfLines.map(l => ({
+        _type: l._type || 'prog',
+        desc: l.desc,
+        shortName: l.shortName || '',
+        rate: l.rate,
+        qty: l._type === 'freight' ? 1 : (l.qty||1),
+        disc: l.disc||0
+      })),
       // Single-item fields for backward compat
       desc: pfLines.map(l => l.desc).filter(Boolean).join('; '),
       unit: firstLine.unit,
@@ -2940,9 +3071,15 @@ function invOpenTIForm(fromPiId, editTiId, fromDashboard) {
     <div class="field-row">
       <div class="field"><label>Nature of invoice</label>
         <div style="display:flex;gap:6px;">
-          <select id="ti-nature" style="flex:1;">${invGetNatureOptions(v.nature||'')}</select>
+          <select id="ti-nature" style="flex:1;" onchange="
+            const m=document.getElementById('ti-nature-manual');
+            if(m) m.style.display=this.value==='__other__'?'block':'none';
+          ">${invGetNatureOptions(v.nature||'')}</select>
           <button type="button" id="ti-nature-add" class="btn btn-sm" title="Add new nature">+</button>
         </div>
+        <input type="text" id="ti-nature-manual" placeholder="Enter nature manually"
+          value="${v.nature && !invGetNatures().includes(v.nature) ? escapeHtml(v.nature) : ''}"
+          style="margin-top:6px; width:100%; display:${(v.nature && !invGetNatures().includes(v.nature) && v.nature !== '') ? 'block' : 'none'};">
       </div>
       <div class="field"><label>TDS deducted?</label>
         <select id="ti-tds">
@@ -2998,7 +3135,10 @@ function invOpenTIForm(fromPiId, editTiId, fromDashboard) {
     const desc = document.getElementById('ti-desc').value.trim();
     if (!desc) { toast('Description is required'); return; }
     const calc = preview();
-    const nature = document.getElementById('ti-nature') ? document.getElementById('ti-nature').value : '';
+    const natureRaw = document.getElementById('ti-nature') ? document.getElementById('ti-nature').value : '';
+    const nature = natureRaw === '__other__'
+      ? (document.getElementById('ti-nature-manual') ? document.getElementById('ti-nature-manual').value.trim() : '')
+      : natureRaw;
     const tdsDeducted = document.getElementById('ti-tds') ? document.getElementById('ti-tds').value : 'no';
     const rec = {
       id: existingTI ? existingTI.id : uid(),
@@ -3328,22 +3468,27 @@ async function invBuildWordDoc(inv, cl, isPi, D) {
     : [{ desc: inv.desc, qty: inv.qty||1, rate: inv.rate||0, disc: inv.disc||0 }];
 
   const lineRows = lineItemsData.map((item, i) => {
-    const itemNet = (item.rate||0) * (item.qty||1);
+    const isFreight = item._type === 'freight';
+    const itemNet = isFreight ? (item.rate||0) : (item.rate||0) * (item.qty||1);
     const itemTaxable = itemNet - (item.disc||0);
     const itemCgst = intra ? itemTaxable * 0.09 : 0;
     const itemSgst = intra ? itemTaxable * 0.09 : 0;
     const itemIgst = intra ? 0 : itemTaxable * 0.18;
     const itemGross = itemTaxable + itemCgst + itemSgst + itemIgst;
+    const qtyDisplay = isFreight ? '' : String(item.qty||1);
     return lineRow2(
       String.fromCharCode(65 + i), item.desc||'', inv.sac||'998399',
-      String(item.qty||1), item.rate||0, itemNet, item.disc||0, itemTaxable,
+      qtyDisplay, item.rate||0, itemNet, item.disc||0, itemTaxable,
       intra?0.09:0, itemCgst, intra?0.09:0, itemSgst,
       intra?0:0.18, itemIgst, itemGross
     );
   });
 
   // Totals from all lines
-  const totalTaxable2 = lineItemsData.reduce((s,item) => s + ((item.rate||0)*(item.qty||1)) - (item.disc||0), 0);
+  const totalTaxable2 = lineItemsData.reduce((s,item) => {
+    const isFreight = item._type === 'freight';
+    return s + (isFreight ? (item.rate||0) : ((item.rate||0)*(item.qty||1))) - (item.disc||0);
+  }, 0);
   const totalCgst2 = intra ? totalTaxable2 * 0.09 : 0;
   const totalSgst2 = intra ? totalTaxable2 * 0.09 : 0;
   const totalIgst2 = intra ? 0 : totalTaxable2 * 0.18;
@@ -3527,7 +3672,7 @@ async function invBuildWordDoc(inv, cl, isPi, D) {
   // ── Header: LMI India letterhead (matching uploaded sample) ──
   const LMI_BLUE = '1F5FA6';
   // LMI South Asia logo embedded as base64 — auto-appears in every generated invoice header
-  const LMI_LOGO_B64 = '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';
+  const LMI_LOGO_B64 = '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';
   const logoBytes = Uint8Array.from(atob(LMI_LOGO_B64), c => c.charCodeAt(0));
   const docHeader = new Header({
     children: [
@@ -4112,33 +4257,44 @@ async function invEmail(invId, type) {
   if (!inv) return;
   const cl = DB.invoicing.clients.find(c => c.id === inv.clientId) || {};
   const isPi = type === 'pi';
-  const typeLabel = isPi ? 'Proforma Invoice' : 'Tax Invoice';
   const typePrefix = isPi ? 'PI' : 'TI';
 
-  // Build default subject: PI/TI + invoice number - your order for NN of SHORT
-  const firstLine = (inv.lineItems && inv.lineItems[0]) || {};
+  // Build subject: "PI/26-27/028 — Your order for 3 of EPP"
+  const firstLine = (inv.lineItems && inv.lineItems.find(l => l._type !== 'freight')) || {};
   const qty = firstLine.qty || inv.qty || '';
-  // Try to get short name from product or use SAC/desc
-  const shortDesc = (() => {
+  const shortName = firstLine.shortName || (() => {
     if (firstLine.desc) {
-      // Extract short form: first word or product code in parens
-      const parenMatch = firstLine.desc.match(/\(([A-Z]{2,6})\)/);
-      if (parenMatch) return parenMatch[1];
-      return firstLine.desc.split(' ').slice(0,3).join(' ');
+      const m = firstLine.desc.match(/\(([A-Z]{2,6})\)/);
+      if (m) return m[1];
+      return firstLine.desc.split(' ').slice(0, 2).join(' ');
     }
-    return inv.desc ? inv.desc.split(' ').slice(0,3).join(' ') : typePrefix;
+    return typePrefix;
   })();
-  const defaultSubject = `${inv.invNo} — Your order for ${qty} of ${shortDesc}`;
+  const defaultSubject = `${inv.invNo} — Your order for ${qty} of ${shortName}`;
 
-  const defaultBody = `Dear ${cl.attn || 'Sir/Madam'},\n\nPlease find attached ${inv.invNo} dated ${inv.date} from LMI South Asia — A Division of Goru Training Pvt. Ltd.\n\nDescription: ${inv.desc || shortDesc}\nGross Amount: ₹${(inv.gross || 0).toLocaleString('en-IN')}${inv.tdsDeducted === 'yes' ? `\nReceivable after TDS (10%): ₹${(inv.receivableAmount || inv.gross || 0).toLocaleString('en-IN')}` : ''}\n\n${isPi ? 'Kindly review and confirm the order.' : 'Kindly arrange payment at your earliest convenience.'}\n\nRegards,\nLMI South Asia — Goru Training Pvt. Ltd.`;
+  // Programme description for body (first non-freight line)
+  const progDesc = firstLine.desc || inv.desc || '';
+  const progQty  = qty;
+  const progShort = shortName;
+  const grossFmt = (inv.gross || 0).toLocaleString('en-IN', {minimumFractionDigits:2});
+  const recvFmt  = (inv.receivableAmount || inv.gross || 0).toLocaleString('en-IN', {minimumFractionDigits:2});
+  const tdsLine  = inv.tdsDeducted === 'yes'
+    ? `\nTotal payable after TDS is ₹${recvFmt}.` : '';
+
+  // Templates from Nirali's standard text
+  const tplPI = `Dear ${cl.attn || ''},\n\nThank you for your order of ${progQty} ${progShort} kit${progQty > 1 ? 's' : ''}.\n\nPFA proforma invoice ${inv.invNo} for the same.${tdsLine}\n\nTax invoice will be raised once we receive full payment.\n\nMany thanks,\n\nRegards,\nNirali Bhakta`;
+
+  const tplTI = `Dear ${cl.attn || ''},\n\nAcknowledging receipt of ₹${recvFmt} in our account. Many thanks.\n\nPFA tax invoice ${inv.invNo} for the same.\n\nThe kits will be dispatched today. Kindly acknowledge receipt.\n\nMany thanks,\n\nRegards,\nNirali Bhakta`;
+
+  const defaultBody = isPi ? tplPI : tplTI;
 
   const body = `
-    <div class="hint" style="background:#e8f0fb; margin-bottom:14px;">
-      <strong>Step 1</strong> — Click Download Word doc to save the invoice.<br>
-      <strong>Step 2</strong> — Click Open Gmail to compose, then attach the downloaded file.
+    <div class="hint" style="background:#e8f0fb; margin-bottom:12px; font-size:12.5px;">
+      <strong>Step 1</strong> — Download Word doc &nbsp;·&nbsp;
+      <strong>Step 2</strong> — Open Gmail, attach the downloaded file, send.
     </div>
     <div class="field">
-      <label>To (email)</label>
+      <label>To</label>
       <input id="em-to" value="${escapeHtml(cl.email || '')}">
     </div>
     <div class="field">
@@ -4146,51 +4302,52 @@ async function invEmail(invId, type) {
       <input id="em-subject" value="${escapeHtml(defaultSubject)}">
     </div>
     <div class="field">
-      <label>Email body</label>
+      <label>Template</label>
       <select id="em-template" style="margin-bottom:8px;">
-        <option value="custom">Custom (type below)</option>
-        <option value="pi_standard">PI — Standard text (coming soon)</option>
-        <option value="ti_standard">TI — Standard text (coming soon)</option>
+        <option value="standard">Standard (Nirali Bhakta)</option>
+        <option value="custom">Custom — edit below</option>
       </select>
-      <textarea id="em-body" rows="8" style="width:100%; padding:9px 11px; border:1px solid var(--line); border-radius:5px; font-size:13px; font-family:var(--sans); resize:vertical;">${escapeHtml(defaultBody)}</textarea>
+      <textarea id="em-body" rows="9" style="width:100%; padding:9px 11px; border:1px solid var(--line); border-radius:5px; font-size:13px; font-family:var(--sans); resize:vertical;">${escapeHtml(defaultBody)}</textarea>
     </div>`;
 
   openModal(`Email ${inv.invNo}`, body,
     `<button class="btn" id="em-cancel">Cancel</button>
-     <button class="btn btn-primary" id="em-pdf">&#8659; Download Word doc first</button>
+     <button class="btn btn-primary" id="em-word">&#8659; Download Word doc</button>
      <button class="btn btn-primary" id="em-open-gmail">&#9993; Open Gmail</button>`);
 
   document.getElementById('em-cancel').onclick = closeModal;
+
+  // Template switcher — live swap body text
   document.getElementById('em-template').onchange = e => {
-    if (e.target.value !== 'custom') {
-      toast('Standard templates coming soon — type your message below for now');
-      e.target.value = 'custom';
-    }
+    const ta = document.getElementById('em-body');
+    if (e.target.value === 'standard') ta.value = isPi ? tplPI : tplTI;
   };
 
-  document.getElementById('em-pdf').onclick = async () => {
-    const btn = document.getElementById('em-pdf');
-    btn.textContent = 'Generating Word doc…';
+  document.getElementById('em-word').onclick = async () => {
+    const btn = document.getElementById('em-word');
+    btn.textContent = 'Generating…';
     btn.disabled = true;
     try {
       await invDownloadWord(inv.id, isPi ? 'pi' : 'ti');
-      btn.textContent = '✓ Word doc downloaded';
-      toast(`${inv.invNo}.docx downloaded — attach it in Gmail`);
-    } catch (e) {
-      btn.textContent = '⬇ Download Word doc first';
+      btn.textContent = '✓ Downloaded';
+      toast(`${inv.invNo}.docx downloaded — attach in Gmail`);
+    } catch(err) {
+      btn.textContent = '⬇ Download Word doc';
       btn.disabled = false;
-      toast('Word generation failed: ' + e.message);
+      toast('Word generation failed: ' + err.message);
     }
   };
 
   document.getElementById('em-open-gmail').onclick = () => {
-    const to = document.getElementById('em-to').value.trim();
+    const to   = document.getElementById('em-to').value.trim();
     const subj = document.getElementById('em-subject').value.trim();
-    const bodyText = document.getElementById('em-body').value.trim();
-    const gmailUrl = `https://mail.google.com/mail/?view=cm&fs=1&to=${encodeURIComponent(to)}&su=${encodeURIComponent(subj)}&body=${encodeURIComponent(bodyText)}`;
-    window.open(gmailUrl, '_blank');
+    const txt  = document.getElementById('em-body').value.trim();
+    window.open(
+      `https://mail.google.com/mail/?view=cm&fs=1&to=${encodeURIComponent(to)}&su=${encodeURIComponent(subj)}&body=${encodeURIComponent(txt)}`,
+      '_blank'
+    );
     closeModal();
-    toast('Gmail opened — attach the downloaded Word doc before sending');
+    toast('Gmail opened — attach the Word doc before sending');
   };
 }
 

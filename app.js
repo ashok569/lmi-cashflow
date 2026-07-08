@@ -1,6 +1,6 @@
 /* ===========================================================
    LMI Cashflow Manager — application logic
-   VERSION 2.4.5e — new LMI South Asia header image; Nature OTHER manual entry on PI+TI; email templates (PI: Nirali standard, TI: Nirali standard) with live template switcher; PROGRAM dropdown with auto-fill from product list; Add Freight button; max 3 program rows — adds: Product master (ADD PRODUCT, PRODUCT LIST, CSV import, OFFLINE/ONLINE/OTHER categories, MOVE button), multi-line invoice items (Add another program), dynamic Word doc (landscape, LMI South Asia header, QTY column, no freight row, multi-item rows), delete receivable PI ripple, date of supply pre-fill, cancel invoice retains delete button. — fix: Word download uses Packer.toBlob (browser-compatible) instead of Packer.toBuffer (Node-only); fix dataset.invWord reference; invBuildWordDoc returns Document not Buffer. — edit PI/TI syncs cashflow receivable amount; cancel vs permanent delete modal; invUpdateReceivableAmount() — header updated to match actual LMI India letterhead (LMI INDIA branding, Apeejay House address, CIN, email/web/tel, logo placeholder), footer updated.
+   VERSION 2.4.5f — new LMI South Asia header image; Nature OTHER manual entry on PI+TI; email templates (PI: Nirali standard, TI: Nirali standard) with live template switcher; PROGRAM dropdown with auto-fill from product list; Add Freight button; max 3 program rows — adds: Product master (ADD PRODUCT, PRODUCT LIST, CSV import, OFFLINE/ONLINE/OTHER categories, MOVE button), multi-line invoice items (Add another program), dynamic Word doc (landscape, LMI South Asia header, QTY column, no freight row, multi-item rows), delete receivable PI ripple, date of supply pre-fill, cancel invoice retains delete button. — fix: Word download uses Packer.toBlob (browser-compatible) instead of Packer.toBuffer (Node-only); fix dataset.invWord reference; invBuildWordDoc returns Document not Buffer. — edit PI/TI syncs cashflow receivable amount; cancel vs permanent delete modal; invUpdateReceivableAmount() — header updated to match actual LMI India letterhead (LMI INDIA branding, Apeejay House address, CIN, email/web/tel, logo placeholder), footer updated.
    doc output matching exact template layout (15-col table,
    all fields, borders, amounts in words), next number preview,
    invoicing module auto-opens from dashboard buttons.
@@ -340,18 +340,13 @@ function renderFYSelect() {
 // them (e.g. months created before this auto-provisioning existed). Returns touched month keys.
 function monthIsMissingProvisions(mk) {
   const m = DB.months[mk];
-  if (!m) return false; // doesn't exist yet — handled by the isNew branch
-  // Once a month has been provisioned, never re-provision it — even if the user
-  // deleted items they didn't want. The _provisioned stamp is set by ensureMonthlyProvisions.
+  if (!m) return false;
   if (m._provisioned) return false;
-  // Only auto-heal months strictly after today
   if (mk <= todayMonthKey()) return false;
+  // If recurringTemplate has entries and none are in this month's payments, needs provisioning
   const hasAnyRecurringTemplate = DB.recurringTemplate && DB.recurringTemplate.length > 0;
   const hasRecurringPayments = m.payments.some(p => p.recurring);
-  const hasTdsLine = m.payments.some(p => /^TDS provisional/i.test(p.name));
-  if (hasAnyRecurringTemplate && !hasRecurringPayments) return true;
-  if (!hasTdsLine) return true;
-  return false;
+  return hasAnyRecurringTemplate && !hasRecurringPayments;
 }
 
 function selectMonth(mk) {
@@ -1590,19 +1585,16 @@ function deleteReceivable(id) {
 
 /* ===========================================================
    AUTOMATIC PROVISIONS
-   - TDS provisional line each month (default est. 1,50,000), editable per month
-   - TDS flagged on payments rolls into next month's TDS line automatically
-   - Quarterly Waco marketing fee (Apr/Jul/Oct/Jan)
+   - TDS provisional and Waco marketing fee are now in DB.recurringTemplate
+     (monthly and quarterly respectively) — migrated on startup.
+   - TDS flagged on payments rolls into next month's TDS provisional line.
    =========================================================== */
 function ensureMonthlyProvisions(mk) {
   const m = ensureMonthExists(mk);
 
-  // Mark as provisioned immediately — this prevents re-provisioning if the user
-  // later deletes items they don't want (e.g. recurring items carried from seed data
-  // that were manually removed). Once stamped, this month is never auto-provisioned again.
+  // Mark as provisioned — prevents re-provisioning if user deletes items they don't want
   m._provisioned = true;
 
-  // Recurring (starred) payments — only add if not already present
   // Recurring (starred) payments — respect frequency and startMonth
   const mkDate = new Date(mk + '-01');
   const mkMonthIdx = mkDate.getMonth(); // 0=Jan
@@ -1624,27 +1616,21 @@ function ensureMonthlyProvisions(mk) {
     }
     if (!applies) return;
 
-    const existing = m.payments.find(p => p.recurring && p.name.toLowerCase().startsWith(tpl.name.toLowerCase()));
+    const existing = m.payments.find(p => p.recurring &&
+      p.name.toLowerCase().startsWith(tpl.name.toLowerCase()));
     if (!existing) {
-      m.payments.push({ id: uid(), name: `${tpl.name} for ${monthLabel(mk)}`, amount: tpl.amount, status: 'planned', recurring: true, frequency: freq, tds: !!tpl.tds });
+      m.payments.push({
+        id: uid(),
+        name: `${tpl.name} for ${monthLabel(mk)}`,
+        amount: tpl.amount,
+        status: 'planned',
+        recurring: true,
+        frequency: freq,
+        tds: !!tpl.tds,
+      });
     }
   });
 
-  // TDS provisional line (auto-added if not present)
-  let tdsLine = m.payments.find(p => /^TDS provisional/i.test(p.name));
-  if (!tdsLine) {
-    tdsLine = { id: uid(), name: 'TDS provisional', amount: TDS_ESTIMATE, status: 'planned', recurring: false, tds: false, _auto: true };
-    m.payments.push(tdsLine);
-  }
-
-  // Quarterly Waco marketing fee
-  const mNum = monthNum(mk);
-  if (QUARTERLY_MONTHS.includes(mNum)) {
-    const has = m.payments.find(p => /waco marketing fee/i.test(p.name));
-    if (!has) {
-      m.payments.push({ id: uid(), name: 'Waco marketing fee', amount: WACO_FEE, status: 'planned', recurring: false, tds: false, _auto: true });
-    }
-  }
   return m;
 }
 
@@ -1658,7 +1644,10 @@ function recalcTDSRollup(mk) {
   const nm = ensureMonthExists(nextMk);
   let tdsLine = nm.payments.find(p => /^TDS provisional/i.test(p.name));
   if (!tdsLine) {
-    tdsLine = { id: uid(), name: 'TDS provisional', amount: TDS_ESTIMATE, status: 'planned', recurring: false, tds: false, _auto: true };
+    // Get amount from template if available, else use constant
+    const tdsTpl = (DB.recurringTemplate || []).find(t => /tds provisional/i.test(t.name));
+    const defaultAmt = tdsTpl ? tdsTpl.amount : TDS_ESTIMATE;
+    tdsLine = { id: uid(), name: 'TDS provisional', amount: defaultAmt, status: 'planned', recurring: true, frequency: 'monthly', tds: false };
     nm.payments.push(tdsLine);
   }
   let addAmt = 0;
@@ -1811,11 +1800,12 @@ async function startApp() {
 }
 
 // Migration: ensure every recurring template entry has an explicit frequency.
-// Any entry without a frequency gets 'monthly' (the safe default).
-// Also fixes the known case where TDS provisional was wrongly tagged quarterly
-// because the WACO quarterly provision logic contaminated it.
+// Also promotes the hardcoded TDS provisional and Waco marketing fee into
+// DB.recurringTemplate so they appear in the left panel with proper frequency.
 function migrateRecurringFrequency() {
-  if (!DB.recurringTemplate) return;
+  if (!DB.recurringTemplate) DB.recurringTemplate = [];
+
+  // 1. Fix any template entries missing frequency → default monthly
   DB.recurringTemplate.forEach(tpl => {
     if (!tpl.frequency) tpl.frequency = 'monthly';
     // TDS is always monthly — never quarterly or annual
@@ -1823,11 +1813,47 @@ function migrateRecurringFrequency() {
       tpl.frequency = 'monthly';
     }
   });
-  // Also fix any month payment rows that have recurring:true but wrong frequency
+
+  // 2. Promote TDS provisional into recurringTemplate if not already there
+  const hasTdsTpl = DB.recurringTemplate.some(t => /tds provisional/i.test(t.name));
+  if (!hasTdsTpl) {
+    // Find the amount from any existing month row
+    let tdsAmt = TDS_ESTIMATE;
+    Object.values(DB.months || {}).forEach(m => {
+      const row = (m.payments || []).find(p => /^TDS provisional/i.test(p.name));
+      if (row && row.amount) tdsAmt = row.amount;
+    });
+    DB.recurringTemplate.push({
+      id: uid(), name: 'TDS provisional', amount: tdsAmt,
+      frequency: 'monthly', startMonth: 'Apr', tds: false,
+    });
+  }
+
+  // 3. Promote Waco marketing fee into recurringTemplate if not already there
+  const hasWacoTpl = DB.recurringTemplate.some(t => /waco marketing fee/i.test(t.name));
+  if (!hasWacoTpl) {
+    let wacoAmt = WACO_FEE;
+    Object.values(DB.months || {}).forEach(m => {
+      const row = (m.payments || []).find(p => /waco marketing fee/i.test(p.name));
+      if (row && row.amount) wacoAmt = row.amount;
+    });
+    DB.recurringTemplate.push({
+      id: uid(), name: 'Waco marketing fee', amount: wacoAmt,
+      frequency: 'quarterly', startMonth: 'Apr', tds: false,
+    });
+  }
+
+  // 4. Fix existing month payment rows: mark TDS and WACO as recurring:true with correct frequency
   Object.values(DB.months || {}).forEach(m => {
     (m.payments || []).forEach(p => {
+      if (/^TDS provisional/i.test(p.name)) {
+        p.recurring = true; p.frequency = 'monthly';
+      }
+      if (/waco marketing fee/i.test(p.name)) {
+        p.recurring = true; p.frequency = 'quarterly';
+      }
+      // Fix any recurring item missing frequency
       if (p.recurring && !p.frequency) p.frequency = 'monthly';
-      if (p.recurring && /tds provisional/i.test(p.name)) p.frequency = 'monthly';
     });
   });
 }

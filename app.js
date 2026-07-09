@@ -1,6 +1,6 @@
 /* ===========================================================
    LMI Cashflow Manager — application logic
-   VERSION 2.4.25 — new LMI South Asia header image; Nature OTHER manual entry on PI+TI; email templates (PI: Nirali standard, TI: Nirali standard) with live template switcher; PROGRAM dropdown with auto-fill from product list; Add Freight button; max 3 program rows — adds: Product master (ADD PRODUCT, PRODUCT LIST, CSV import, OFFLINE/ONLINE/OTHER categories, MOVE button), multi-line invoice items (Add another program), dynamic Word doc (landscape, LMI South Asia header, QTY column, no freight row, multi-item rows), delete receivable PI ripple, date of supply pre-fill, cancel invoice retains delete button. — fix: Word download uses Packer.toBlob (browser-compatible) instead of Packer.toBuffer (Node-only); fix dataset.invWord reference; invBuildWordDoc returns Document not Buffer. — edit PI/TI syncs cashflow receivable amount; cancel vs permanent delete modal; invUpdateReceivableAmount() — header updated to match actual LMI India letterhead (LMI INDIA branding, Apeejay House address, CIN, email/web/tel, logo placeholder), footer updated.
+   VERSION 2.4.21 — new LMI South Asia header image; Nature OTHER manual entry on PI+TI; email templates (PI: Nirali standard, TI: Nirali standard) with live template switcher; PROGRAM dropdown with auto-fill from product list; Add Freight button; max 3 program rows — adds: Product master (ADD PRODUCT, PRODUCT LIST, CSV import, OFFLINE/ONLINE/OTHER categories, MOVE button), multi-line invoice items (Add another program), dynamic Word doc (landscape, LMI South Asia header, QTY column, no freight row, multi-item rows), delete receivable PI ripple, date of supply pre-fill, cancel invoice retains delete button. — fix: Word download uses Packer.toBlob (browser-compatible) instead of Packer.toBuffer (Node-only); fix dataset.invWord reference; invBuildWordDoc returns Document not Buffer. — edit PI/TI syncs cashflow receivable amount; cancel vs permanent delete modal; invUpdateReceivableAmount() — header updated to match actual LMI India letterhead (LMI INDIA branding, Apeejay House address, CIN, email/web/tel, logo placeholder), footer updated.
    doc output matching exact template layout (15-col table,
    all fields, borders, amounts in words), next number preview,
    invoicing module auto-opens from dashboard buttons.
@@ -211,16 +211,10 @@ function computeClosing(mk) {
   return getOpening(mk) + receiptsTotal - paymentsTotal;
 }
 
-// Bank position = Opening balance + all receipts this month − only PAID payments
-// Planned and On Hold payments are excluded — reflects actual current bank balance
-function bankPosition(mk) {
-  const m = DB.months[mk];
-  if (!m) return getOpeningBalance(mk);
-  const opening = getOpeningBalance(mk);
-  const receiptsTotal = (m.receipts || []).reduce((s, r) => s + (Number(r.amount) || 0), 0);
-  const paidPayments = (m.payments || []).filter(p => p.status === 'paid')
-    .reduce((s, p) => s + (Number(p.amount) || 0), 0);
-  return opening + receiptsTotal - paidPayments;
+function anticipatedStatus(mk) {
+  const { paymentsOnHold } = monthTotals(mk);
+  const closing = computeClosing(mk);
+  return closing - paymentsOnHold;
 }
 
 /* ===========================================================
@@ -409,21 +403,15 @@ function renderDashboard() {
   ensureMonthExists(mk);
   const opening = getOpening(mk);
   const closing = computeClosing(mk);
-  const bankPos = bankPosition(mk);
+  const anticipated = anticipatedStatus(mk);
   const { receiptsTotal, paymentsTotal, paymentsOnHold, receivablesTotal } = monthTotals(mk);
 
   document.getElementById('obMonthLabel').textContent = monthLabel(mk);
-  // Update label from 'Anticipated status' to 'Bank position' if element exists
-  const antLabel = document.querySelector('span.l[for="anticipatedAmt"], .balance-sub span.l');
-  if (antLabel && antLabel.nextElementSibling && antLabel.nextElementSibling.id === 'anticipatedAmt') {
-    antLabel.textContent = 'Bank position';
-  }
   document.getElementById('openingAmt').textContent = fmtMoney(opening);
   document.getElementById('openingAmt').classList.toggle('neg', opening < 0);
   document.getElementById('closingAmt').textContent = fmtMoney(closing);
   document.getElementById('closingAmt').classList.toggle('neg', closing < 0);
-  document.getElementById('anticipatedAmt').textContent = fmtMoney(bankPos);
-  document.getElementById('anticipatedAmt').classList.toggle('neg', bankPos < 0);
+  document.getElementById('anticipatedAmt').textContent = fmtMoney(anticipated);
 
   document.getElementById('statReceipts').textContent = fmtMoney(receiptsTotal);
   document.getElementById('statPayments').textContent = fmtMoney(paymentsTotal);
@@ -1876,11 +1864,7 @@ async function startApp() {
   if (window.Cloud && Cloud.cloudConfigured() && Cloud.currentUser) {
     try {
       const cloudDB = await Cloud.cloudLoadAll();
-      // Consider cloud populated if we have months OR workspace data exists
-      const hasAnyCloudData = Object.keys(cloudDB.months).length > 0
-        || (cloudDB.recurringTemplate && cloudDB.recurringTemplate.length > 0)
-        || (cloudDB.fixedDeposits && cloudDB.fixedDeposits.length > 0)
-        || cloudDB._workspaceId;
+      const hasAnyCloudData = Object.keys(cloudDB.months).length > 0;
       if (hasAnyCloudData) {
         DB = cloudDB;
       } else {
@@ -1889,16 +1873,13 @@ async function startApp() {
       }
       if (!DB.selectedMonth) DB.selectedMonth = todayMonthKey();
       if (!DB.currentFY) DB.currentFY = fyLabelForMonth(DB.selectedMonth);
-      migrateRecurringFrequency();
+      migrateRecurringFrequency();  // fix any wrongly-categorised recurring items
       ensureMonthExists(DB.selectedMonth);
       ensureMonthlyProvisions(DB.selectedMonth);
       recalcTDSRollup(DB.selectedMonth);
       promoteCarriedReceivables();
       syncCarriedReceivables();
-      // Only save back if we loaded real data — never overwrite with an empty seed
-      if (hasAnyCloudData) {
-        saveDB([prevMonthKey(DB.selectedMonth), nextMonthKey(todayMonthKey())]);
-      }
+      saveDB([prevMonthKey(DB.selectedMonth), nextMonthKey(todayMonthKey())]);
       Cloud.startRealtime();
     } catch (err) {
       console.error('Cloud load failed, falling back to local data', err);

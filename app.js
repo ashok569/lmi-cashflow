@@ -1,6 +1,6 @@
 /* ===========================================================
    LMI Cashflow Manager — application logic
-   VERSION 2.4.20 — new LMI South Asia header image; Nature OTHER manual entry on PI+TI; email templates (PI: Nirali standard, TI: Nirali standard) with live template switcher; PROGRAM dropdown with auto-fill from product list; Add Freight button; max 3 program rows — adds: Product master (ADD PRODUCT, PRODUCT LIST, CSV import, OFFLINE/ONLINE/OTHER categories, MOVE button), multi-line invoice items (Add another program), dynamic Word doc (landscape, LMI South Asia header, QTY column, no freight row, multi-item rows), delete receivable PI ripple, date of supply pre-fill, cancel invoice retains delete button. — fix: Word download uses Packer.toBlob (browser-compatible) instead of Packer.toBuffer (Node-only); fix dataset.invWord reference; invBuildWordDoc returns Document not Buffer. — edit PI/TI syncs cashflow receivable amount; cancel vs permanent delete modal; invUpdateReceivableAmount() — header updated to match actual LMI India letterhead (LMI INDIA branding, Apeejay House address, CIN, email/web/tel, logo placeholder), footer updated.
+   VERSION 2.4.21 — new LMI South Asia header image; Nature OTHER manual entry on PI+TI; email templates (PI: Nirali standard, TI: Nirali standard) with live template switcher; PROGRAM dropdown with auto-fill from product list; Add Freight button; max 3 program rows — adds: Product master (ADD PRODUCT, PRODUCT LIST, CSV import, OFFLINE/ONLINE/OTHER categories, MOVE button), multi-line invoice items (Add another program), dynamic Word doc (landscape, LMI South Asia header, QTY column, no freight row, multi-item rows), delete receivable PI ripple, date of supply pre-fill, cancel invoice retains delete button. — fix: Word download uses Packer.toBlob (browser-compatible) instead of Packer.toBuffer (Node-only); fix dataset.invWord reference; invBuildWordDoc returns Document not Buffer. — edit PI/TI syncs cashflow receivable amount; cancel vs permanent delete modal; invUpdateReceivableAmount() — header updated to match actual LMI India letterhead (LMI INDIA branding, Apeejay House address, CIN, email/web/tel, logo placeholder), footer updated.
    doc output matching exact template layout (15-col table,
    all fields, borders, amounts in words), next number preview,
    invoicing module auto-opens from dashboard buttons.
@@ -2199,11 +2199,13 @@ function spEmptyScenario() {
     spendLines: [],       // [{id, label, amount}]
     checkedRecvIds: [],   // receivable ids selected for inflow
     unlistedInflows: [],  // [{id, label, amount}]
+    deferredPayments: [], // [{paymentId, months}] — months = 1|2|3
   };
 }
 
 function openScenarioPlanner() {
   if (!SP) SP = spEmptyScenario();
+  if (!SP.deferredPayments) SP.deferredPayments = [];
   if (!DB.scenarios) DB.scenarios = [];
   document.getElementById('scenarioOverlay').style.display = 'block';
   document.body.style.overflow = 'hidden';
@@ -2373,6 +2375,172 @@ function spRenderUnlisted() {
   spUpdateInflowTotal();
 }
 
+/* ---------- Deferred payments ---------- */
+function spRenderDeferred() {
+  const wrap = document.getElementById('sp-defer-list');
+  if (!wrap) return;
+  if (!SP.deferredPayments) SP.deferredPayments = [];
+
+  // Get current month's unpaid, non-recurring payments
+  const todayMk = todayMonthKey();
+  const m = DB.months[todayMk];
+  const unpaidNonRecurring = m
+    ? m.payments.filter(p => !p.recurring && p.status !== 'paid' && p.amount > 0)
+    : [];
+
+  if (!unpaidNonRecurring.length) {
+    wrap.innerHTML = '<div class="empty-note">No unpaid non-recurring payments this month.</div>';
+    document.getElementById('sp-defer-total').textContent = '₹0';
+    return;
+  }
+
+  const totalDeferred = unpaidNonRecurring
+    .filter(p => SP.deferredPayments.find(d => d.paymentId === p.id))
+    .reduce((s, p) => s + (p.amount || 0), 0);
+  document.getElementById('sp-defer-total').textContent = fmtMoney(totalDeferred);
+
+  wrap.innerHTML = unpaidNonRecurring.map(p => {
+    const deferred = SP.deferredPayments.find(d => d.paymentId === p.id);
+    const checked = !!deferred;
+    const months = deferred ? deferred.months : 1;
+    return `
+      <div style="display:flex; align-items:center; gap:6px; padding:6px 0; border-bottom:1px solid var(--line); font-size:12.5px;">
+        <input type="checkbox" data-sp-defer-cb="${p.id}" ${checked ? 'checked' : ''}
+          style="width:15px;height:15px;cursor:pointer;flex-shrink:0;">
+        <span style="flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;"
+          title="${escapeHtml(p.name)}">${escapeHtml(p.name)}</span>
+        <span style="font-family:var(--mono);font-size:12px;color:var(--ink-soft);flex-shrink:0;">${fmtMoney(p.amount)}</span>
+        <div style="display:flex;gap:2px;flex-shrink:0;">
+          ${[1,2,3].map(n => `
+            <label style="display:flex;align-items:center;gap:1px;font-size:11px;font-weight:700;
+              color:${checked && months===n ? 'var(--navy)' : 'var(--ink-soft)'};cursor:pointer;">
+              <input type="radio" name="sp-defer-m-${p.id}" data-sp-defer-m="${p.id}" value="${n}"
+                ${months === n ? 'checked' : ''} ${!checked ? 'disabled' : ''}
+                style="width:12px;height:12px;accent-color:var(--navy);">
+              ${n}M
+            </label>`).join('')}
+        </div>
+      </div>`;
+  }).join('');
+
+  // Wire checkbox
+  wrap.querySelectorAll('[data-sp-defer-cb]').forEach(cb => {
+    cb.onchange = () => {
+      const pid = cb.dataset.spDeferCb;
+      if (cb.checked) {
+        if (!SP.deferredPayments.find(d => d.paymentId === pid)) {
+          SP.deferredPayments.push({ paymentId: pid, months: 1 });
+        }
+      } else {
+        SP.deferredPayments = SP.deferredPayments.filter(d => d.paymentId !== pid);
+      }
+      spRenderDeferred(); spRenderReport();
+    };
+  });
+
+  // Wire radio months
+  wrap.querySelectorAll('[data-sp-defer-m]').forEach(radio => {
+    radio.onchange = () => {
+      const pid = radio.dataset.spDeferM;
+      const d = SP.deferredPayments.find(x => x.paymentId === pid);
+      if (d) { d.months = parseInt(radio.value); spRenderReport(); spRenderCommitArea(); }
+    };
+  });
+
+  spRenderCommitArea();
+}
+
+function spRenderCommitArea() {
+  const area = document.getElementById('sp-defer-commit-area');
+  if (!area) return;
+  if (!SP.deferredPayments || !SP.deferredPayments.length) {
+    area.innerHTML = '';
+    return;
+  }
+
+  const todayMk = todayMonthKey();
+  const m = DB.months[todayMk];
+  if (!m) { area.innerHTML = ''; return; }
+
+  const items = SP.deferredPayments.map(d => {
+    const p = m.payments.find(x => x.id === d.paymentId);
+    if (!p) return null;
+    // Compute target month
+    let targetMk = todayMk;
+    for (let i = 0; i < d.months; i++) targetMk = nextMonthKey(targetMk);
+    return { p, d, targetMk };
+  }).filter(Boolean);
+
+  if (!items.length) { area.innerHTML = ''; return; }
+
+  area.innerHTML = `
+    <div style="font-size:11px;font-weight:700;color:var(--navy);text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px;">
+      Commit to live data
+    </div>
+    <div style="font-size:11px;color:var(--ink-soft);margin-bottom:8px;">
+      Each button permanently moves one payment. Confirms before committing.
+    </div>
+    ${items.map(({p, d, targetMk}) => `
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:6px;
+                  padding:6px 0;border-bottom:1px solid var(--line);font-size:12px;">
+        <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--ink);"
+          title="${escapeHtml(p.name)}">${escapeHtml(p.name.length > 22 ? p.name.slice(0,22)+'…' : p.name)}</span>
+        <span style="font-family:var(--mono);color:var(--ink-soft);font-size:11px;flex-shrink:0;">→ ${monthLabel(targetMk)}</span>
+        <button data-sp-commit="${p.id}" data-sp-commit-target="${targetMk}"
+          class="btn btn-sm" style="flex-shrink:0;font-size:11px;padding:3px 8px;
+          background:var(--navy);color:#fff;border-color:var(--navy);">
+          Commit
+        </button>
+      </div>`).join('')}`;
+
+  area.querySelectorAll('[data-sp-commit]').forEach(btn => {
+    btn.onclick = () => spCommitDefer(btn.dataset.spCommit, btn.dataset.spCommitTarget);
+  });
+}
+
+function spCommitDefer(paymentId, targetMk) {
+  const todayMk = todayMonthKey();
+  const m = DB.months[todayMk];
+  if (!m) return;
+  const p = m.payments.find(x => x.id === paymentId);
+  if (!p) return;
+
+  const d = SP.deferredPayments.find(x => x.paymentId === paymentId);
+  const months = d ? d.months : '?';
+
+  if (!confirm(
+    `Move "${p.name}" (${fmtMoney(p.amount)}) from ${monthLabel(todayMk)} → ${monthLabel(targetMk)}?\n\n` +
+    `This will permanently remove it from ${monthLabel(todayMk)} and add it as planned in ${monthLabel(targetMk)}.\n\n` +
+    `This cannot be undone — are you sure?`
+  )) return;
+
+  // Remove from current month
+  m.payments = m.payments.filter(x => x.id !== paymentId);
+
+  // Add to target month
+  const targetM = ensureMonthExists(targetMk);
+  targetM.payments.push({
+    ...p,
+    id: uid(),
+    name: p.name,
+    status: 'planned',
+    _deferredFrom: todayMk,
+    _deferredBy: months,
+  });
+
+  // Remove from SP deferred list
+  SP.deferredPayments = SP.deferredPayments.filter(x => x.paymentId !== paymentId);
+
+  // Save live data
+  saveDB([todayMk, targetMk]);
+
+  toast(`✓ "${p.name}" moved to ${monthLabel(targetMk)}`);
+
+  // Refresh defer list and report
+  spRenderDeferred();
+  spRenderReport();
+}
+
 function spInflowTotal() {
   const todayMk = todayMonthKey();
   const m = DB.months[todayMk];
@@ -2394,24 +2562,44 @@ function spRenderReport() {
   const todayMk = todayMonthKey();
   const next1Mk = nextMonthKey(todayMk);
   const next2Mk = nextMonthKey(next1Mk);
+  const next3Mk = nextMonthKey(next2Mk);
 
   const totalSpend = SP.spendLines.reduce((s, x) => s + (Number(x.amount) || 0), 0);
   const { recvTotal, unlistedTotal, total: inflowTotal } = spInflowTotal();
+
+  // Calculate deferred amounts per month shift
+  if (!SP.deferredPayments) SP.deferredPayments = [];
+  const todayM = DB.months[todayMk];
+  let defer1 = 0, defer2 = 0, defer3 = 0; // amounts deferred INTO next1, next2, next3
+
+  SP.deferredPayments.forEach(d => {
+    const p = todayM ? todayM.payments.find(x => x.id === d.paymentId) : null;
+    if (!p) return;
+    const amt = Number(p.amount) || 0;
+    if (d.months === 1) defer1 += amt;
+    else if (d.months === 2) defer2 += amt;
+    else if (d.months === 3) defer3 += amt;
+  });
+  const totalDeferred = defer1 + defer2 + defer3;
 
   // Base projections from live data
   const todayClosing = computeClosing(todayMk);
   const next1Closing = computeClosing(next1Mk);
   const next2Closing = computeClosing(next2Mk);
+  const next3Closing = computeClosing(next3Mk);
 
   // Scenario projections
-  const todayScenario = todayClosing + inflowTotal - totalSpend;
-  // Next months cascade from the scenario closing of the prior month
-  const next1Base = getOpening(next1Mk);
+  // Current month: remove deferred payments from outgoings → cash improves
+  const todayScenario = todayClosing + inflowTotal - totalSpend + totalDeferred;
+  // Next months: deferred payments land in their target months
   const { receiptsTotal: r1, paymentsTotal: p1 } = monthTotals(next1Mk);
-  const next1Scenario = todayScenario + (r1 - p1); // uses scenario closing as next month's opening
-  const next2Base = getOpening(next2Mk);
+  const next1Scenario = todayScenario + (r1 - p1) - defer1;
+
   const { receiptsTotal: r2, paymentsTotal: p2 } = monthTotals(next2Mk);
-  const next2Scenario = next1Scenario + (r2 - p2);
+  const next2Scenario = next1Scenario + (r2 - p2) - defer2;
+
+  const { receiptsTotal: r3, paymentsTotal: p3 } = monthTotals(next3Mk);
+  const next3Scenario = next2Scenario + (r3 - p3) - defer3;
 
   function row(label, value, bold = false, highlight = null) {
     const color = highlight === 'good' ? 'var(--green)' : highlight === 'bad' ? 'var(--red)' : 'var(--ink)';
@@ -2423,17 +2611,20 @@ function spRenderReport() {
   function sectionHead(label) {
     return `<div style="font-size:10.5px; text-transform:uppercase; letter-spacing:.07em; color:var(--ink-soft); margin:14px 0 6px 0; font-weight:600;">${label}</div>`;
   }
-  function divider() {
-    return `<div style="border-top:2px solid var(--line); margin:10px 0;"></div>`;
-  }
+  function divider() { return `<div style="border-top:2px solid var(--line); margin:10px 0;"></div>`; }
 
   const spendBreakdown = SP.spendLines.length
     ? SP.spendLines.map(s => row(`&nbsp;&nbsp;&nbsp;${escapeHtml(s.label) || 'Unnamed spend'}`, -(Number(s.amount) || 0))).join('')
     : '';
-
   const inflowBreakdown = SP.checkedRecvIds.length || SP.unlistedInflows.length
     ? (SP.checkedRecvIds.length ? row('&nbsp;&nbsp;&nbsp;Selected receivables', recvTotal) : '')
       + (SP.unlistedInflows.length ? row('&nbsp;&nbsp;&nbsp;Unlisted inflows', unlistedTotal) : '')
+    : '';
+  const deferBreakdown = totalDeferred > 0
+    ? row(`&nbsp;&nbsp;&nbsp;Deferred to later months`, totalDeferred)
+    + (defer1 > 0 ? row(`&nbsp;&nbsp;&nbsp;&nbsp;→ lands in ${monthLabel(next1Mk)}`, -defer1) : '')
+    + (defer2 > 0 ? row(`&nbsp;&nbsp;&nbsp;&nbsp;→ lands in ${monthLabel(next2Mk)}`, -defer2) : '')
+    + (defer3 > 0 ? row(`&nbsp;&nbsp;&nbsp;&nbsp;→ lands in ${monthLabel(next3Mk)}`, -defer3) : '')
     : '';
 
   document.getElementById('sp-report-body').innerHTML = `
@@ -2441,16 +2632,26 @@ function spRenderReport() {
     ${row('Live closing projection', todayClosing)}
     ${inflowBreakdown}
     ${spendBreakdown}
+    ${totalDeferred > 0 ? row('&nbsp;&nbsp;&nbsp;Deferred (removed from this month)', totalDeferred) : ''}
     ${divider()}
     ${row('Scenario closing', todayScenario, true, todayScenario >= 0 ? 'good' : 'bad')}
 
-    ${sectionHead(monthLabel(next1Mk) + ' — next month')}
+    ${sectionHead(monthLabel(next1Mk) + ' — +1 month')}
     ${row('Live closing projection', next1Closing)}
-    ${row('After scenario carry-forward', next1Scenario, true, next1Scenario >= 0 ? 'good' : 'bad')}
+    ${defer1 > 0 ? row('&nbsp;&nbsp;&nbsp;Deferred payments landing', -defer1) : ''}
+    ${row('Scenario closing', next1Scenario, true, next1Scenario >= 0 ? 'good' : 'bad')}
 
-    ${sectionHead(monthLabel(next2Mk) + ' — month after')}
+    ${sectionHead(monthLabel(next2Mk) + ' — +2 months')}
     ${row('Live closing projection', next2Closing)}
-    ${row('After scenario carry-forward', next2Scenario, true, next2Scenario >= 0 ? 'good' : 'bad')}
+    ${defer2 > 0 ? row('&nbsp;&nbsp;&nbsp;Deferred payments landing', -defer2) : ''}
+    ${row('Scenario closing', next2Scenario, true, next2Scenario >= 0 ? 'good' : 'bad')}
+
+    ${next3Scenario !== next2Scenario || defer3 > 0 ? `
+    ${sectionHead(monthLabel(next3Mk) + ' — +3 months')}
+    ${row('Live closing projection', next3Closing)}
+    ${defer3 > 0 ? row('&nbsp;&nbsp;&nbsp;Deferred payments landing', -defer3) : ''}
+    ${row('Scenario closing', next3Scenario, true, next3Scenario >= 0 ? 'good' : 'bad')}
+    ` : ''}
   `;
 }
 
@@ -2459,6 +2660,7 @@ function spRender() {
   spRenderSpend();
   spRenderRecvChecks();
   spRenderUnlisted();
+  spRenderDeferred();
   spRenderReport();
 }
 

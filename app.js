@@ -1,6 +1,6 @@
 /* ===========================================================
    LMI Cashflow Manager — application logic
-   VERSION 2.4.21 — new LMI South Asia header image; Nature OTHER manual entry on PI+TI; email templates (PI: Nirali standard, TI: Nirali standard) with live template switcher; PROGRAM dropdown with auto-fill from product list; Add Freight button; max 3 program rows — adds: Product master (ADD PRODUCT, PRODUCT LIST, CSV import, OFFLINE/ONLINE/OTHER categories, MOVE button), multi-line invoice items (Add another program), dynamic Word doc (landscape, LMI South Asia header, QTY column, no freight row, multi-item rows), delete receivable PI ripple, date of supply pre-fill, cancel invoice retains delete button. — fix: Word download uses Packer.toBlob (browser-compatible) instead of Packer.toBuffer (Node-only); fix dataset.invWord reference; invBuildWordDoc returns Document not Buffer. — edit PI/TI syncs cashflow receivable amount; cancel vs permanent delete modal; invUpdateReceivableAmount() — header updated to match actual LMI India letterhead (LMI INDIA branding, Apeejay House address, CIN, email/web/tel, logo placeholder), footer updated.
+   VERSION 2.4.26 — new LMI South Asia header image; Nature OTHER manual entry on PI+TI; email templates (PI: Nirali standard, TI: Nirali standard) with live template switcher; PROGRAM dropdown with auto-fill from product list; Add Freight button; max 3 program rows — adds: Product master (ADD PRODUCT, PRODUCT LIST, CSV import, OFFLINE/ONLINE/OTHER categories, MOVE button), multi-line invoice items (Add another program), dynamic Word doc (landscape, LMI South Asia header, QTY column, no freight row, multi-item rows), delete receivable PI ripple, date of supply pre-fill, cancel invoice retains delete button. — fix: Word download uses Packer.toBlob (browser-compatible) instead of Packer.toBuffer (Node-only); fix dataset.invWord reference; invBuildWordDoc returns Document not Buffer. — edit PI/TI syncs cashflow receivable amount; cancel vs permanent delete modal; invUpdateReceivableAmount() — header updated to match actual LMI India letterhead (LMI INDIA branding, Apeejay House address, CIN, email/web/tel, logo placeholder), footer updated.
    doc output matching exact template layout (15-col table,
    all fields, borders, amounts in words), next number preview,
    invoicing module auto-opens from dashboard buttons.
@@ -217,6 +217,17 @@ function anticipatedStatus(mk) {
   return closing - paymentsOnHold;
 }
 
+// Bank position = Opening + all receipts − only PAID payments (excludes planned/on-hold)
+function bankPosition(mk) {
+  const m = DB.months[mk];
+  const opening = getOpening(mk);
+  if (!m) return opening;
+  const receiptsTotal = (m.receipts || []).reduce((s, r) => s + (Number(r.amount) || 0), 0);
+  const paidPayments = (m.payments || []).filter(p => p.status === 'paid')
+    .reduce((s, p) => s + (Number(p.amount) || 0), 0);
+  return opening + receiptsTotal - paidPayments;
+}
+
 /* ===========================================================
    RECEIVABLES CARRY-FORWARD
    Source: always today's calendar month.
@@ -412,6 +423,9 @@ function renderDashboard() {
   document.getElementById('closingAmt').textContent = fmtMoney(closing);
   document.getElementById('closingAmt').classList.toggle('neg', closing < 0);
   document.getElementById('anticipatedAmt').textContent = fmtMoney(anticipated);
+  const bankPos = bankPosition(mk);
+  const bankEl = document.getElementById('bankPositionAmt');
+  if (bankEl) { bankEl.textContent = fmtMoney(bankPos); bankEl.style.color = bankPos < 0 ? '#f3a39c' : '#eef2f7'; }
 
   document.getElementById('statReceipts').textContent = fmtMoney(receiptsTotal);
   document.getElementById('statPayments').textContent = fmtMoney(paymentsTotal);

@@ -1,6 +1,6 @@
 /* ===========================================================
    LMI Cashflow Manager — application logic
-   VERSION 2.4.17 — new LMI South Asia header image; Nature OTHER manual entry on PI+TI; email templates (PI: Nirali standard, TI: Nirali standard) with live template switcher; PROGRAM dropdown with auto-fill from product list; Add Freight button; max 3 program rows — adds: Product master (ADD PRODUCT, PRODUCT LIST, CSV import, OFFLINE/ONLINE/OTHER categories, MOVE button), multi-line invoice items (Add another program), dynamic Word doc (landscape, LMI South Asia header, QTY column, no freight row, multi-item rows), delete receivable PI ripple, date of supply pre-fill, cancel invoice retains delete button. — fix: Word download uses Packer.toBlob (browser-compatible) instead of Packer.toBuffer (Node-only); fix dataset.invWord reference; invBuildWordDoc returns Document not Buffer. — edit PI/TI syncs cashflow receivable amount; cancel vs permanent delete modal; invUpdateReceivableAmount() — header updated to match actual LMI India letterhead (LMI INDIA branding, Apeejay House address, CIN, email/web/tel, logo placeholder), footer updated.
+   VERSION 2.4.19 — new LMI South Asia header image; Nature OTHER manual entry on PI+TI; email templates (PI: Nirali standard, TI: Nirali standard) with live template switcher; PROGRAM dropdown with auto-fill from product list; Add Freight button; max 3 program rows — adds: Product master (ADD PRODUCT, PRODUCT LIST, CSV import, OFFLINE/ONLINE/OTHER categories, MOVE button), multi-line invoice items (Add another program), dynamic Word doc (landscape, LMI South Asia header, QTY column, no freight row, multi-item rows), delete receivable PI ripple, date of supply pre-fill, cancel invoice retains delete button. — fix: Word download uses Packer.toBlob (browser-compatible) instead of Packer.toBuffer (Node-only); fix dataset.invWord reference; invBuildWordDoc returns Document not Buffer. — edit PI/TI syncs cashflow receivable amount; cancel vs permanent delete modal; invUpdateReceivableAmount() — header updated to match actual LMI India letterhead (LMI INDIA branding, Apeejay House address, CIN, email/web/tel, logo placeholder), footer updated.
    doc output matching exact template layout (15-col table,
    all fields, borders, amounts in words), next number preview,
    invoicing module auto-opens from dashboard buttons.
@@ -512,13 +512,18 @@ function renderLedgers() {
   if (!m.payments.length) {
     paymentsRows.innerHTML = '<div class="empty-note" style="padding:14px;">No payments recorded for this month.</div>';
   } else {
-    paymentsRows.innerHTML = m.payments.map(p => `
+    // Starred (recurring) items always at top, non-recurring below
+    const sorted = [
+      ...m.payments.filter(p => p.recurring),
+      ...m.payments.filter(p => !p.recurring),
+    ];
+    paymentsRows.innerHTML = sorted.map(p => `
       <div class="lrow">
         <span class="nm">${p.recurring ? '<span class="star">&#9733;</span>' : ''}${escapeHtml(p.name)}${p.tds ? ' <span style="color:var(--ink-soft); font-size:10.5px;">(TDS)</span>' : ''}</span>
         <span class="amt">${p.amount ? fmtMoney(p.amount) : '<span style="color:var(--ink-soft);">pending</span>'}</span>
         <span data-toggle-status="${p.id}" style="cursor:pointer;" title="Click to change status">${statusBadge(p.status)}</span>
         <span class="row-actions">
-          <button data-edit-payment="${p.id}" title="Edit">&#9998;</button>
+          <button data-edit-payment="${p.id}" title="${/^TDS provisional/i.test(p.name) ? 'View TDS breakdown' : /^GST for/i.test(p.name) ? 'View GST breakdown' : 'Edit'}">&#9998;</button>
           <button data-del-payment="${p.id}" title="Delete">&#10005;</button>
         </span>
       </div>`).join('');
@@ -1461,63 +1466,6 @@ function openEditPayment(id) {
   const m = getMonth(DB.selectedMonth);
   const p = m.payments.find(p => p.id === id);
   if (!p) return;
-
-  // ── TDS provisional — show breakdown popup ──────────────────
-  if (/^TDS provisional/i.test(p.name) && p._tdsBreakdown) {
-    const bd = p._tdsBreakdown;
-    const srcM = DB.months[bd.sourceMonth];
-    const tdsPayments = srcM ? srcM.payments.filter(x => x.tds && x.amount > 0) : [];
-    const lines = tdsPayments.map(x =>
-      `<div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--line);font-size:13px;">
-        <span>${escapeHtml(x.name)}</span>
-        <span style="font-family:var(--mono);">10% of ${fmtMoney(x.amount)} = <strong>${fmtMoney(x.amount*0.1)}</strong></span>
-      </div>`).join('');
-    const body = `
-      <div style="margin-bottom:12px;font-size:13px;color:var(--ink-soft);">
-        TDS deducted in <strong>${monthLabel(bd.sourceMonth)}</strong>, payable this month.
-      </div>
-      <div style="display:flex;justify-content:space-between;padding:6px 0;font-size:13px;border-bottom:2px solid var(--line);">
-        <span>Base recurring estimate</span>
-        <strong>${fmtMoney(bd.base)}</strong>
-      </div>
-      ${lines}
-      <div style="display:flex;justify-content:space-between;padding:8px 0;font-size:14px;font-weight:700;color:var(--navy);border-top:2px solid var(--navy);margin-top:6px;">
-        <span>Total TDS to deposit</span>
-        <span>${fmtMoney(bd.base + bd.fromPayments)}</span>
-      </div>`;
-    openModal(`TDS breakdown — ${p.name}`, body,
-      `<button class="btn" id="tds-bd-close">Close</button>
-       <button class="btn" id="tds-bd-edit">Edit amount manually</button>`);
-    document.getElementById('tds-bd-close').onclick = closeModal;
-    document.getElementById('tds-bd-edit').onclick = () => { closeModal(); _openEditPaymentForm(id); };
-    return;
-  }
-
-  // ── GST entry — show breakdown popup ───────────────────────
-  if (/^GST for/i.test(p.name) && p._gstBreakdown) {
-    const bd = p._gstBreakdown;
-    const lines = (bd.receipts || []).map(r =>
-      `<div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--line);font-size:13px;">
-        <span>${escapeHtml(r.name)}</span>
-        <strong>${fmtMoney(r.gst)}</strong>
-      </div>`).join('');
-    const body = `
-      <div style="margin-bottom:12px;font-size:13px;color:var(--ink-soft);">
-        GST from receipts in <strong>${p.name.replace(/^GST for\s*/i,'')}</strong>
-      </div>
-      ${lines || '<div style="color:var(--ink-soft);font-size:13px;">No individual receipt breakdown available.</div>'}
-      <div style="display:flex;justify-content:space-between;padding:8px 0;font-size:14px;font-weight:700;color:var(--navy);border-top:2px solid var(--navy);margin-top:6px;">
-        <span>Total GST liability</span>
-        <span>${fmtMoney(p.amount)}</span>
-      </div>`;
-    openModal(`GST breakdown — ${p.name}`, body,
-      `<button class="btn" id="gst-bd-close">Close</button>
-       <button class="btn" id="gst-bd-edit">Edit amount manually</button>`);
-    document.getElementById('gst-bd-close').onclick = closeModal;
-    document.getElementById('gst-bd-edit').onclick = () => { closeModal(); _openEditPaymentForm(id); };
-    return;
-  }
-
   _openEditPaymentForm(id);
 }
 
@@ -1542,7 +1490,53 @@ function _openEditPaymentForm(id) {
       <select id="ep-schedule-month">${months.map(mk => `<option value="${mk}">${monthLabel(mk)}</option>`).join('')}</select>
     </div>
     <div class="checkrow"><input type="checkbox" id="ep-tds" ${p.tds?'checked':''}><label for="ep-tds">TDS applicable</label></div>
-    <div class="hint" id="ep-hint">${p.recurring ? 'This is a recurring item. To change it for all future months, use Edit recurring instead. Saving here changes only ' + monthLabel(DB.selectedMonth) + '.' : 'Edits here apply only to ' + monthLabel(DB.selectedMonth) + '.'}</div>`;
+    <div class="hint" id="ep-hint">${p.recurring ? 'This is a recurring item. To change it for all future months, use Edit recurring instead. Saving here changes only ' + monthLabel(DB.selectedMonth) + '.' : 'Edits here apply only to ' + monthLabel(DB.selectedMonth) + '.'}</div>
+    ${(() => {
+      // TDS provisional breakdown
+      if (/^TDS provisional/i.test(p.name)) {
+        const prevMk = prevMonthKey(DB.selectedMonth);
+        const srcM = DB.months[prevMk];
+        const tdsTpl = (DB.recurringTemplate || []).find(t => /tds provisional/i.test(t.name));
+        const baseAmt = tdsTpl ? (tdsTpl.amount || 0) : TDS_ESTIMATE;
+        const tdsPayments = srcM ? srcM.payments.filter(x => x.tds && x.amount > 0) : [];
+        const tdsFromPayments = tdsPayments.reduce((s, x) => s + x.amount * 0.10, 0);
+        const rows = tdsPayments.length
+          ? tdsPayments.map(x => `<div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--line);font-size:12.5px;">
+              <span>${escapeHtml(x.name)}</span>
+              <span style="font-family:var(--mono);">10% of ${fmtMoney(x.amount)} = <strong>${fmtMoney(x.amount*0.1)}</strong></span>
+            </div>`).join('')
+          : `<div style="color:var(--ink-soft);font-size:12.5px;padding:6px 0;">No TDS-flagged payments in ${monthLabel(prevMk)}.</div>`;
+        return `<div style="margin-top:14px;border-top:2px solid var(--line);padding-top:10px;">
+          <div style="font-size:11px;font-weight:700;color:var(--navy);text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px;">TDS Calculation</div>
+          <div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--line);font-size:12.5px;">
+            <span>Base recurring estimate</span><strong>${fmtMoney(baseAmt)}</strong>
+          </div>
+          <div style="font-size:11px;color:var(--ink-soft);margin:4px 0 2px;">TDS deducted in ${monthLabel(prevMk)}:</div>
+          ${rows}
+          <div style="display:flex;justify-content:space-between;padding:6px 0;font-size:13px;font-weight:700;color:var(--navy);border-top:2px solid var(--navy);margin-top:4px;">
+            <span>Calculated total</span><span>${fmtMoney(baseAmt + tdsFromPayments)}</span>
+          </div>
+        </div>`;
+      }
+      // GST breakdown
+      if (/^GST for/i.test(p.name)) {
+        const nameMonth = p.name.replace(/^GST for\s*/i, '').trim();
+        const bd = p._gstBreakdown;
+        const rows = (bd && bd.receipts && bd.receipts.length)
+          ? bd.receipts.map(r => `<div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--line);font-size:12.5px;">
+              <span>${escapeHtml(r.name)}</span><strong>${fmtMoney(r.gst)}</strong>
+            </div>`).join('')
+          : `<div style="color:var(--ink-soft);font-size:12.5px;padding:6px 0;">GST accumulated from receipts in ${nameMonth}.</div>`;
+        return `<div style="margin-top:14px;border-top:2px solid var(--line);padding-top:10px;">
+          <div style="font-size:11px;font-weight:700;color:var(--navy);text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px;">GST Breakdown — from ${nameMonth}</div>
+          ${rows}
+          <div style="display:flex;justify-content:space-between;padding:6px 0;font-size:13px;font-weight:700;color:var(--navy);border-top:2px solid var(--navy);margin-top:4px;">
+            <span>Total GST liability</span><span>${fmtMoney(p.amount)}</span>
+          </div>
+        </div>`;
+      }
+      return '';
+    })()}`;
   openModal('Edit payment', body, `<button class="btn" id="ep-cancel">Cancel</button><button class="btn btn-primary" id="ep-save">Save</button>`);
   document.getElementById('ep-cancel').onclick = closeModal;
 

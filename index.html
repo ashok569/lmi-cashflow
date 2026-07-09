@@ -241,6 +241,7 @@
   .ledger-head h3{font-family:var(--serif); font-size:13.5px; margin:0; font-weight:600;}
   .ledger-head .tot{font-family:var(--mono); font-size:13.5px; font-weight:700;}
   .ledger-rows{max-height:420px; overflow-y:auto;}
+  #paymentsRows{max-height:840px;}
   .lrow{
     display:grid; grid-template-columns: 1fr auto auto auto; gap:8px; align-items:center;
     padding:8px 14px; border-bottom:1px solid #eef0f2; font-size:12.5px;
@@ -451,6 +452,10 @@
     <div class="balance-card">
       <div class="label">Opening balance &mdash; <span id="obMonthLabel"></span></div>
       <div class="amount" id="openingAmt">&#8377;0</div>
+      <div style="margin:8px 0 4px 0; padding:6px 8px; background:rgba(255,255,255,0.08); border-radius:5px;">
+        <span style="color:#9fb3cc; font-size:10px; text-transform:uppercase; letter-spacing:.07em;">Bank</span>
+        <div style="font-family:var(--mono); font-size:16px; color:#eef2f7; font-weight:700; margin-top:2px;" id="bankPositionAmt">&#8377;0</div>
+      </div>
       <div class="balance-sub">
         <div>
           <span class="l">Closing (projected)</span>
@@ -568,16 +573,17 @@
           <tbody></tbody>
         </table>
       </div>
-      <div class="ledger">
-        <div class="ledger-head" style="background:#f1ece0;">
-          <h3>Import orders</h3>
-          <span class="tot" id="importsTotal">&#8377;0</span>
-        </div>
-        <table class="simple" id="importsTable">
-          <thead><tr><th>Order</th><th style="text-align:right;">Amount</th><th></th></tr></thead>
-          <tbody></tbody>
-        </table>
+    </div>
+
+    <div class="ledger">
+      <div class="ledger-head" style="background:#f1ece0;">
+        <h3>Import orders</h3>
+        <span class="tot" id="importsTotal">&#8377;0</span>
       </div>
+      <table class="simple" id="importsTable">
+        <thead><tr><th>Order</th><th style="text-align:right;">Amount</th><th></th></tr></thead>
+        <tbody></tbody>
+      </table>
     </div>
 
   </div>

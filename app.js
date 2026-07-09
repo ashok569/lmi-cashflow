@@ -1,6 +1,6 @@
 /* ===========================================================
    LMI Cashflow Manager — application logic
-   VERSION 2.4.9 — new LMI South Asia header image; Nature OTHER manual entry on PI+TI; email templates (PI: Nirali standard, TI: Nirali standard) with live template switcher; PROGRAM dropdown with auto-fill from product list; Add Freight button; max 3 program rows — adds: Product master (ADD PRODUCT, PRODUCT LIST, CSV import, OFFLINE/ONLINE/OTHER categories, MOVE button), multi-line invoice items (Add another program), dynamic Word doc (landscape, LMI South Asia header, QTY column, no freight row, multi-item rows), delete receivable PI ripple, date of supply pre-fill, cancel invoice retains delete button. — fix: Word download uses Packer.toBlob (browser-compatible) instead of Packer.toBuffer (Node-only); fix dataset.invWord reference; invBuildWordDoc returns Document not Buffer. — edit PI/TI syncs cashflow receivable amount; cancel vs permanent delete modal; invUpdateReceivableAmount() — header updated to match actual LMI India letterhead (LMI INDIA branding, Apeejay House address, CIN, email/web/tel, logo placeholder), footer updated.
+   VERSION 2.4.10 — new LMI South Asia header image; Nature OTHER manual entry on PI+TI; email templates (PI: Nirali standard, TI: Nirali standard) with live template switcher; PROGRAM dropdown with auto-fill from product list; Add Freight button; max 3 program rows — adds: Product master (ADD PRODUCT, PRODUCT LIST, CSV import, OFFLINE/ONLINE/OTHER categories, MOVE button), multi-line invoice items (Add another program), dynamic Word doc (landscape, LMI South Asia header, QTY column, no freight row, multi-item rows), delete receivable PI ripple, date of supply pre-fill, cancel invoice retains delete button. — fix: Word download uses Packer.toBlob (browser-compatible) instead of Packer.toBuffer (Node-only); fix dataset.invWord reference; invBuildWordDoc returns Document not Buffer. — edit PI/TI syncs cashflow receivable amount; cancel vs permanent delete modal; invUpdateReceivableAmount() — header updated to match actual LMI India letterhead (LMI INDIA branding, Apeejay House address, CIN, email/web/tel, logo placeholder), footer updated.
    doc output matching exact template layout (15-col table,
    all fields, borders, amounts in words), next number preview,
    invoicing module auto-opens from dashboard buttons.
@@ -982,34 +982,32 @@ function applyRecurringForward(fromMk) {
 
   months.forEach(mk => {
     const m = ensureMonthExists(mk);
-    // Month index 0-11
     const mkDate = new Date(mk + '-01');
-    const mkMonthIdx = mkDate.getMonth(); // 0=Jan
+    const mkMonthIdx = mkDate.getMonth();
     const mkMonthShort = MONTHS_SHORT[mkMonthIdx];
 
     DB.recurringTemplate.forEach(tpl => {
       const freq = tpl.frequency || 'monthly';
-      const startMonth = tpl.startMonth || MONTHS_SHORT[0]; // default Jan
+      const startMonth = tpl.startMonth || MONTHS_SHORT[0];
       const startIdx = MONTHS_SHORT.indexOf(startMonth);
 
-      // Determine if this template applies in month mk
       let applies = false;
       if (freq === 'monthly') {
         applies = true;
       } else if (freq === 'quarterly') {
-        // Applies if month is startMonth + 0, 3, 6, 9 months (mod 12)
         const diff = (mkMonthIdx - startIdx + 12) % 12;
         applies = diff % 3 === 0;
       } else if (freq === 'annual') {
-        // Only applies in the startMonth
         applies = mkMonthShort === startMonth;
       }
-
       if (!applies) return;
 
-      const existing = m.payments.find(p => p.recurring && p.name.toLowerCase().startsWith(tpl.name.toLowerCase()));
+      // Match by template name (strip month suffix from existing entries for comparison)
+      const existing = m.payments.find(p => p.recurring &&
+        p.name.toLowerCase().replace(/\s+for\s+.+$/i, '') === tpl.name.toLowerCase());
       if (existing) {
         existing.amount = tpl.amount;
+        existing.frequency = freq; // ensure frequency is up to date
       } else {
         m.payments.push({
           id: uid(),
@@ -1617,7 +1615,7 @@ function ensureMonthlyProvisions(mk) {
     if (!applies) return;
 
     const existing = m.payments.find(p => p.recurring &&
-      p.name.toLowerCase().startsWith(tpl.name.toLowerCase()));
+      p.name.toLowerCase().replace(/\s+for\s+.+$/i, '') === tpl.name.toLowerCase());
     if (!existing) {
       m.payments.push({
         id: uid(),
@@ -1808,25 +1806,18 @@ function migrateRecurringFrequency() {
   // 1. Fix any template entries missing frequency → default monthly
   DB.recurringTemplate.forEach(tpl => {
     if (!tpl.frequency) tpl.frequency = 'monthly';
-    // TDS is always monthly — never quarterly or annual
-    if (/tds/i.test(tpl.name) && tpl.frequency !== 'monthly') {
-      tpl.frequency = 'monthly';
-    }
+    if (/tds/i.test(tpl.name) && tpl.frequency !== 'monthly') tpl.frequency = 'monthly';
   });
 
   // 2. Promote TDS provisional into recurringTemplate if not already there
   const hasTdsTpl = DB.recurringTemplate.some(t => /tds provisional/i.test(t.name));
   if (!hasTdsTpl) {
-    // Find the amount from any existing month row
     let tdsAmt = TDS_ESTIMATE;
     Object.values(DB.months || {}).forEach(m => {
       const row = (m.payments || []).find(p => /^TDS provisional/i.test(p.name));
       if (row && row.amount) tdsAmt = row.amount;
     });
-    DB.recurringTemplate.push({
-      id: uid(), name: 'TDS provisional', amount: tdsAmt,
-      frequency: 'monthly', startMonth: 'Apr', tds: false,
-    });
+    DB.recurringTemplate.push({ id: uid(), name: 'TDS provisional', amount: tdsAmt, frequency: 'monthly', startMonth: 'Apr', tds: false });
   }
 
   // 3. Promote Waco marketing fee into recurringTemplate if not already there
@@ -1837,23 +1828,57 @@ function migrateRecurringFrequency() {
       const row = (m.payments || []).find(p => /waco marketing fee/i.test(p.name));
       if (row && row.amount) wacoAmt = row.amount;
     });
-    DB.recurringTemplate.push({
-      id: uid(), name: 'Waco marketing fee', amount: wacoAmt,
-      frequency: 'quarterly', startMonth: 'Apr', tds: false,
-    });
+    DB.recurringTemplate.push({ id: uid(), name: 'Waco marketing fee', amount: wacoAmt, frequency: 'quarterly', startMonth: 'Apr', tds: false });
   }
 
-  // 4. Fix existing month payment rows: mark TDS and WACO as recurring:true with correct frequency
-  Object.values(DB.months || {}).forEach(m => {
+  // 4. Fix existing month payment rows: mark TDS and WACO as recurring with correct frequency
+  Object.entries(DB.months || {}).forEach(([mk, m]) => {
     (m.payments || []).forEach(p => {
-      if (/^TDS provisional/i.test(p.name)) {
-        p.recurring = true; p.frequency = 'monthly';
-      }
-      if (/waco marketing fee/i.test(p.name)) {
-        p.recurring = true; p.frequency = 'quarterly';
-      }
-      // Fix any recurring item missing frequency
+      if (/^TDS provisional/i.test(p.name)) { p.recurring = true; p.frequency = 'monthly'; }
+      if (/waco marketing fee/i.test(p.name)) { p.recurring = true; p.frequency = 'quarterly'; }
       if (p.recurring && !p.frequency) p.frequency = 'monthly';
+    });
+  });
+
+  // 5. ── DATA CLEANUP ──────────────────────────────────────────────
+  // Remove payments that are in the wrong month (e.g. "Salaries for Aug 26" inside July's data).
+  // A recurring payment's name suffix must match the month it lives in.
+  // Also remove exact duplicates (same name+amount in same month).
+  const MONTH_LABELS_MAP = {};
+  Object.keys(DB.months || {}).forEach(mk => {
+    MONTH_LABELS_MAP[monthLabel(mk).toLowerCase()] = mk;
+  });
+
+  Object.entries(DB.months || {}).forEach(([mk, m]) => {
+    if (!m.payments) return;
+    const thisMonthLabel = monthLabel(mk).toLowerCase(); // e.g. "aug 2026"
+
+    // Remove recurring entries whose name suffix belongs to a DIFFERENT month
+    m.payments = m.payments.filter(p => {
+      if (!p.recurring) return true;
+      // Check if name ends with "for [month label]" and that label ≠ this month
+      const match = p.name.match(/\bfor\s+(.+)$/i);
+      if (!match) return true; // no month suffix — keep (e.g. old "TDS provisional")
+      const suffix = match[1].trim().toLowerCase();
+      // If suffix matches a known month key and it's not this month → wrong month → remove
+      if (MONTH_LABELS_MAP[suffix] && MONTH_LABELS_MAP[suffix] !== mk) {
+        console.log(`[cleanup] Removing "${p.name}" from ${mk} (belongs to ${MONTH_LABELS_MAP[suffix]})`);
+        return false;
+      }
+      return true;
+    });
+
+    // Remove duplicate recurring entries (keep first, remove subsequent same-name)
+    const seen = new Set();
+    m.payments = m.payments.filter(p => {
+      if (!p.recurring) return true;
+      const key = p.name.toLowerCase().replace(/\s+for\s+.+$/i, ''); // normalise suffix away
+      if (seen.has(key)) {
+        console.log(`[cleanup] Removing duplicate "${p.name}" from ${mk}`);
+        return false;
+      }
+      seen.add(key);
+      return true;
     });
   });
 }

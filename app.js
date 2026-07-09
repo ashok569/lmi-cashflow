@@ -1,6 +1,6 @@
 /* ===========================================================
    LMI Cashflow Manager — application logic
-   VERSION 2.4.19 — new LMI South Asia header image; Nature OTHER manual entry on PI+TI; email templates (PI: Nirali standard, TI: Nirali standard) with live template switcher; PROGRAM dropdown with auto-fill from product list; Add Freight button; max 3 program rows — adds: Product master (ADD PRODUCT, PRODUCT LIST, CSV import, OFFLINE/ONLINE/OTHER categories, MOVE button), multi-line invoice items (Add another program), dynamic Word doc (landscape, LMI South Asia header, QTY column, no freight row, multi-item rows), delete receivable PI ripple, date of supply pre-fill, cancel invoice retains delete button. — fix: Word download uses Packer.toBlob (browser-compatible) instead of Packer.toBuffer (Node-only); fix dataset.invWord reference; invBuildWordDoc returns Document not Buffer. — edit PI/TI syncs cashflow receivable amount; cancel vs permanent delete modal; invUpdateReceivableAmount() — header updated to match actual LMI India letterhead (LMI INDIA branding, Apeejay House address, CIN, email/web/tel, logo placeholder), footer updated.
+   VERSION 2.4.20 — new LMI South Asia header image; Nature OTHER manual entry on PI+TI; email templates (PI: Nirali standard, TI: Nirali standard) with live template switcher; PROGRAM dropdown with auto-fill from product list; Add Freight button; max 3 program rows — adds: Product master (ADD PRODUCT, PRODUCT LIST, CSV import, OFFLINE/ONLINE/OTHER categories, MOVE button), multi-line invoice items (Add another program), dynamic Word doc (landscape, LMI South Asia header, QTY column, no freight row, multi-item rows), delete receivable PI ripple, date of supply pre-fill, cancel invoice retains delete button. — fix: Word download uses Packer.toBlob (browser-compatible) instead of Packer.toBuffer (Node-only); fix dataset.invWord reference; invBuildWordDoc returns Document not Buffer. — edit PI/TI syncs cashflow receivable amount; cancel vs permanent delete modal; invUpdateReceivableAmount() — header updated to match actual LMI India letterhead (LMI INDIA branding, Apeejay House address, CIN, email/web/tel, logo placeholder), footer updated.
    doc output matching exact template layout (15-col table,
    all fields, borders, amounts in words), next number preview,
    invoicing module auto-opens from dashboard buttons.
@@ -1520,13 +1520,43 @@ function _openEditPaymentForm(id) {
       }
       // GST breakdown
       if (/^GST for/i.test(p.name)) {
+        // "GST for Jul 26" lives in August — source month is the month named in the entry
+        // That month's receipts with a GST portion generated this entry
         const nameMonth = p.name.replace(/^GST for\s*/i, '').trim();
+        // Find the source month key by matching monthLabel
+        const srcMk = Object.keys(DB.months || {}).find(mk => {
+          const lbl = monthLabel(mk).toLowerCase(); // "aug 26"
+          const nm = nameMonth.toLowerCase();
+          return lbl === nm || lbl.replace(' ','') === nm.replace(' ','');
+        });
+        const srcM = srcMk ? DB.months[srcMk] : null;
+
+        // Reconstruct from stored _gstBreakdown OR from receipts in source month
+        let rows = '';
         const bd = p._gstBreakdown;
-        const rows = (bd && bd.receipts && bd.receipts.length)
-          ? bd.receipts.map(r => `<div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--line);font-size:12.5px;">
+        if (bd && bd.receipts && bd.receipts.length) {
+          rows = bd.receipts.map(r =>
+            `<div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--line);font-size:12.5px;">
               <span>${escapeHtml(r.name)}</span><strong>${fmtMoney(r.gst)}</strong>
-            </div>`).join('')
-          : `<div style="color:var(--ink-soft);font-size:12.5px;padding:6px 0;">GST accumulated from receipts in ${nameMonth}.</div>`;
+            </div>`).join('');
+        } else if (srcM) {
+          // Reconstruct: look at receipts in source month that had GST recorded
+          // Receipts don't store GST per-item, but we can show all receipts from that month
+          const receipts = (srcM.receipts || []);
+          if (receipts.length) {
+            rows = receipts.map(r =>
+              `<div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--line);font-size:12.5px;">
+                <span>${escapeHtml(r.name)}</span>
+                <span style="color:var(--ink-soft);font-size:11px;">receipt: ${fmtMoney(r.amount)}</span>
+              </div>`).join('');
+            rows += `<div style="color:var(--ink-soft);font-size:11px;padding:4px 0;">Per-receipt GST split not stored — total shown below.</div>`;
+          } else {
+            rows = `<div style="color:var(--ink-soft);font-size:12.5px;padding:6px 0;">No receipts found in ${nameMonth}.</div>`;
+          }
+        } else {
+          rows = `<div style="color:var(--ink-soft);font-size:12.5px;padding:6px 0;">Source month data not available.</div>`;
+        }
+
         return `<div style="margin-top:14px;border-top:2px solid var(--line);padding-top:10px;">
           <div style="font-size:11px;font-weight:700;color:var(--navy);text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px;">GST Breakdown — from ${nameMonth}</div>
           ${rows}

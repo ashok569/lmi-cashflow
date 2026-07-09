@@ -1,6 +1,6 @@
 /* ===========================================================
    LMI Cashflow Manager — application logic
-   VERSION 2.4.10 — new LMI South Asia header image; Nature OTHER manual entry on PI+TI; email templates (PI: Nirali standard, TI: Nirali standard) with live template switcher; PROGRAM dropdown with auto-fill from product list; Add Freight button; max 3 program rows — adds: Product master (ADD PRODUCT, PRODUCT LIST, CSV import, OFFLINE/ONLINE/OTHER categories, MOVE button), multi-line invoice items (Add another program), dynamic Word doc (landscape, LMI South Asia header, QTY column, no freight row, multi-item rows), delete receivable PI ripple, date of supply pre-fill, cancel invoice retains delete button. — fix: Word download uses Packer.toBlob (browser-compatible) instead of Packer.toBuffer (Node-only); fix dataset.invWord reference; invBuildWordDoc returns Document not Buffer. — edit PI/TI syncs cashflow receivable amount; cancel vs permanent delete modal; invUpdateReceivableAmount() — header updated to match actual LMI India letterhead (LMI INDIA branding, Apeejay House address, CIN, email/web/tel, logo placeholder), footer updated.
+   VERSION 2.4.11 — new LMI South Asia header image; Nature OTHER manual entry on PI+TI; email templates (PI: Nirali standard, TI: Nirali standard) with live template switcher; PROGRAM dropdown with auto-fill from product list; Add Freight button; max 3 program rows — adds: Product master (ADD PRODUCT, PRODUCT LIST, CSV import, OFFLINE/ONLINE/OTHER categories, MOVE button), multi-line invoice items (Add another program), dynamic Word doc (landscape, LMI South Asia header, QTY column, no freight row, multi-item rows), delete receivable PI ripple, date of supply pre-fill, cancel invoice retains delete button. — fix: Word download uses Packer.toBlob (browser-compatible) instead of Packer.toBuffer (Node-only); fix dataset.invWord reference; invBuildWordDoc returns Document not Buffer. — edit PI/TI syncs cashflow receivable amount; cancel vs permanent delete modal; invUpdateReceivableAmount() — header updated to match actual LMI India letterhead (LMI INDIA branding, Apeejay House address, CIN, email/web/tel, logo placeholder), footer updated.
    doc output matching exact template layout (15-col table,
    all fields, borders, amounts in words), next number preview,
    invoicing module auto-opens from dashboard buttons.
@@ -1844,23 +1844,42 @@ function migrateRecurringFrequency() {
   // Remove payments that are in the wrong month (e.g. "Salaries for Aug 26" inside July's data).
   // A recurring payment's name suffix must match the month it lives in.
   // Also remove exact duplicates (same name+amount in same month).
+  // Build month label map with multiple formats for robustness
   const MONTH_LABELS_MAP = {};
   Object.keys(DB.months || {}).forEach(mk => {
-    MONTH_LABELS_MAP[monthLabel(mk).toLowerCase()] = mk;
+    const label = monthLabel(mk).toLowerCase(); // "jul 26"
+    MONTH_LABELS_MAP[label] = mk;
+    // Also map compact format e.g. "jul26", "jun26"
+    MONTH_LABELS_MAP[label.replace(' ', '')] = mk;
+    // And "jul 2026" long year format
+    const [y, mo] = mk.split('-').map(Number);
+    const names = ['','jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'];
+    MONTH_LABELS_MAP[`${names[mo]} 20${String(y).slice(2)}`] = mk;
+    MONTH_LABELS_MAP[`${names[mo]}${y}`] = mk;
   });
 
   Object.entries(DB.months || {}).forEach(([mk, m]) => {
     if (!m.payments) return;
-    const thisMonthLabel = monthLabel(mk).toLowerCase(); // e.g. "aug 2026"
 
     // Remove recurring entries whose name suffix belongs to a DIFFERENT month
     m.payments = m.payments.filter(p => {
       if (!p.recurring) return true;
-      // Check if name ends with "for [month label]" and that label ≠ this month
       const match = p.name.match(/\bfor\s+(.+)$/i);
-      if (!match) return true; // no month suffix — keep (e.g. old "TDS provisional")
+      if (!match) {
+        // No month suffix — keep ONLY if no suffixed version of the same item exists in this month
+        // e.g. remove bare "TDS provisional" if "TDS provisional for Jul 26" already here
+        const bareKey = p.name.toLowerCase().trim();
+        const hasSuffixed = m.payments.some(q =>
+          q !== p && q.recurring &&
+          q.name.toLowerCase().replace(/\s+for\s+.+$/i, '').trim() === bareKey
+        );
+        if (hasSuffixed) {
+          console.log(`[cleanup] Removing legacy bare entry "${p.name}" from ${mk} (suffixed version exists)`);
+          return false;
+        }
+        return true;
+      }
       const suffix = match[1].trim().toLowerCase();
-      // If suffix matches a known month key and it's not this month → wrong month → remove
       if (MONTH_LABELS_MAP[suffix] && MONTH_LABELS_MAP[suffix] !== mk) {
         console.log(`[cleanup] Removing "${p.name}" from ${mk} (belongs to ${MONTH_LABELS_MAP[suffix]})`);
         return false;
@@ -1868,11 +1887,11 @@ function migrateRecurringFrequency() {
       return true;
     });
 
-    // Remove duplicate recurring entries (keep first, remove subsequent same-name)
+    // Remove duplicate recurring entries (keep first, remove subsequent same normalised name)
     const seen = new Set();
     m.payments = m.payments.filter(p => {
       if (!p.recurring) return true;
-      const key = p.name.toLowerCase().replace(/\s+for\s+.+$/i, ''); // normalise suffix away
+      const key = p.name.toLowerCase().replace(/\s+for\s+.+$/i, '').trim();
       if (seen.has(key)) {
         console.log(`[cleanup] Removing duplicate "${p.name}" from ${mk}`);
         return false;

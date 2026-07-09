@@ -1,6 +1,6 @@
 /* ===========================================================
    LMI Cashflow Manager — application logic
-   VERSION 2.4.16 — new LMI South Asia header image; Nature OTHER manual entry on PI+TI; email templates (PI: Nirali standard, TI: Nirali standard) with live template switcher; PROGRAM dropdown with auto-fill from product list; Add Freight button; max 3 program rows — adds: Product master (ADD PRODUCT, PRODUCT LIST, CSV import, OFFLINE/ONLINE/OTHER categories, MOVE button), multi-line invoice items (Add another program), dynamic Word doc (landscape, LMI South Asia header, QTY column, no freight row, multi-item rows), delete receivable PI ripple, date of supply pre-fill, cancel invoice retains delete button. — fix: Word download uses Packer.toBlob (browser-compatible) instead of Packer.toBuffer (Node-only); fix dataset.invWord reference; invBuildWordDoc returns Document not Buffer. — edit PI/TI syncs cashflow receivable amount; cancel vs permanent delete modal; invUpdateReceivableAmount() — header updated to match actual LMI India letterhead (LMI INDIA branding, Apeejay House address, CIN, email/web/tel, logo placeholder), footer updated.
+   VERSION 2.4.17 — new LMI South Asia header image; Nature OTHER manual entry on PI+TI; email templates (PI: Nirali standard, TI: Nirali standard) with live template switcher; PROGRAM dropdown with auto-fill from product list; Add Freight button; max 3 program rows — adds: Product master (ADD PRODUCT, PRODUCT LIST, CSV import, OFFLINE/ONLINE/OTHER categories, MOVE button), multi-line invoice items (Add another program), dynamic Word doc (landscape, LMI South Asia header, QTY column, no freight row, multi-item rows), delete receivable PI ripple, date of supply pre-fill, cancel invoice retains delete button. — fix: Word download uses Packer.toBlob (browser-compatible) instead of Packer.toBuffer (Node-only); fix dataset.invWord reference; invBuildWordDoc returns Document not Buffer. — edit PI/TI syncs cashflow receivable amount; cancel vs permanent delete modal; invUpdateReceivableAmount() — header updated to match actual LMI India letterhead (LMI INDIA branding, Apeejay House address, CIN, email/web/tel, logo placeholder), footer updated.
    doc output matching exact template layout (15-col table,
    all fields, borders, amounts in words), next number preview,
    invoicing module auto-opens from dashboard buttons.
@@ -358,11 +358,11 @@ function selectMonth(mk) {
   if (isNew || needsHealing) {
     ensureMonthlyProvisions(mk);
   }
-  if (isNew) {
-    recalcTDSRollup(mk); // roll this month's TDS-flagged payments into next month's TDS provisional
-    const prevMk = prevMonthKey(mk);
-    if (DB.months[prevMk]) touched.push(prevMk);
-  }
+  // Always recompute: prev month's TDS flows into mk, and mk's TDS flows into next month
+  const prevMk = prevMonthKey(mk);
+  if (DB.months[prevMk]) recalcTDSRollup(prevMk); // seeds mk's TDS provisional from prev month
+  recalcTDSRollup(mk); // seeds next month's TDS provisional from mk
+  if (DB.months[prevMk]) touched.push(prevMk);
   return touched;
 }
 
@@ -827,8 +827,11 @@ function openPaymentReceivedFor(receivableId) {
       const existingGst = nm.payments.find(p => /^GST for/i.test(p.name));
       if (existingGst) {
         existingGst.amount = (Number(existingGst.amount) || 0) + gstAmt;
+        if (!existingGst._gstBreakdown) existingGst._gstBreakdown = { receipts: [] };
+        existingGst._gstBreakdown.receipts.push({ name: rec.name, gst: gstAmt });
       } else {
-        nm.payments.push({ id: uid(), name: `GST for ${monthLabel(DB.selectedMonth)}`, amount: gstAmt, status: 'planned', recurring: false, tds: false });
+        nm.payments.push({ id: uid(), name: `GST for ${monthLabel(DB.selectedMonth)}`, amount: gstAmt, status: 'planned', recurring: false, tds: false,
+          _gstBreakdown: { receipts: [{ name: rec.name, gst: gstAmt }] } });
       }
     }
 
@@ -1458,6 +1461,70 @@ function openEditPayment(id) {
   const m = getMonth(DB.selectedMonth);
   const p = m.payments.find(p => p.id === id);
   if (!p) return;
+
+  // ── TDS provisional — show breakdown popup ──────────────────
+  if (/^TDS provisional/i.test(p.name) && p._tdsBreakdown) {
+    const bd = p._tdsBreakdown;
+    const srcM = DB.months[bd.sourceMonth];
+    const tdsPayments = srcM ? srcM.payments.filter(x => x.tds && x.amount > 0) : [];
+    const lines = tdsPayments.map(x =>
+      `<div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--line);font-size:13px;">
+        <span>${escapeHtml(x.name)}</span>
+        <span style="font-family:var(--mono);">10% of ${fmtMoney(x.amount)} = <strong>${fmtMoney(x.amount*0.1)}</strong></span>
+      </div>`).join('');
+    const body = `
+      <div style="margin-bottom:12px;font-size:13px;color:var(--ink-soft);">
+        TDS deducted in <strong>${monthLabel(bd.sourceMonth)}</strong>, payable this month.
+      </div>
+      <div style="display:flex;justify-content:space-between;padding:6px 0;font-size:13px;border-bottom:2px solid var(--line);">
+        <span>Base recurring estimate</span>
+        <strong>${fmtMoney(bd.base)}</strong>
+      </div>
+      ${lines}
+      <div style="display:flex;justify-content:space-between;padding:8px 0;font-size:14px;font-weight:700;color:var(--navy);border-top:2px solid var(--navy);margin-top:6px;">
+        <span>Total TDS to deposit</span>
+        <span>${fmtMoney(bd.base + bd.fromPayments)}</span>
+      </div>`;
+    openModal(`TDS breakdown — ${p.name}`, body,
+      `<button class="btn" id="tds-bd-close">Close</button>
+       <button class="btn" id="tds-bd-edit">Edit amount manually</button>`);
+    document.getElementById('tds-bd-close').onclick = closeModal;
+    document.getElementById('tds-bd-edit').onclick = () => { closeModal(); _openEditPaymentForm(id); };
+    return;
+  }
+
+  // ── GST entry — show breakdown popup ───────────────────────
+  if (/^GST for/i.test(p.name) && p._gstBreakdown) {
+    const bd = p._gstBreakdown;
+    const lines = (bd.receipts || []).map(r =>
+      `<div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--line);font-size:13px;">
+        <span>${escapeHtml(r.name)}</span>
+        <strong>${fmtMoney(r.gst)}</strong>
+      </div>`).join('');
+    const body = `
+      <div style="margin-bottom:12px;font-size:13px;color:var(--ink-soft);">
+        GST from receipts in <strong>${p.name.replace(/^GST for\s*/i,'')}</strong>
+      </div>
+      ${lines || '<div style="color:var(--ink-soft);font-size:13px;">No individual receipt breakdown available.</div>'}
+      <div style="display:flex;justify-content:space-between;padding:8px 0;font-size:14px;font-weight:700;color:var(--navy);border-top:2px solid var(--navy);margin-top:6px;">
+        <span>Total GST liability</span>
+        <span>${fmtMoney(p.amount)}</span>
+      </div>`;
+    openModal(`GST breakdown — ${p.name}`, body,
+      `<button class="btn" id="gst-bd-close">Close</button>
+       <button class="btn" id="gst-bd-edit">Edit amount manually</button>`);
+    document.getElementById('gst-bd-close').onclick = closeModal;
+    document.getElementById('gst-bd-edit').onclick = () => { closeModal(); _openEditPaymentForm(id); };
+    return;
+  }
+
+  _openEditPaymentForm(id);
+}
+
+function _openEditPaymentForm(id) {
+  const m = getMonth(DB.selectedMonth);
+  const p = m.payments.find(p => p.id === id);
+  if (!p) return;
   const months = monthsOfFY(DB.currentFY).filter(mk => mk !== DB.selectedMonth);
   const body = `
     <div class="field"><label>Name</label><input type="text" id="ep-name" value="${escapeHtml(p.name)}"></div>
@@ -1635,33 +1702,30 @@ function ensureMonthlyProvisions(mk) {
 
 // Roll TDS-flagged payment amounts (10%) from a month into next month's TDS provisional line, once.
 // TDS rollup — TDS deducted this month is payable NEXT month.
-// Recomputes from scratch each call: next month's TDS provisional = base template amount + 10% of all TDS-flagged payments in mk.
-// Never accumulates across calls — always a clean recalculation.
+// Next month's TDS provisional = base template amount + 10% of all TDS-flagged payments in mk.
+// Always recomputes from scratch. Base is always seeded even if no TDS payments yet.
 function recalcTDSRollup(mk) {
   const m = DB.months[mk];
   if (!m) return;
+  const tdsTpl = (DB.recurringTemplate || []).find(t => /tds provisional/i.test(t.name));
+  const baseAmt = tdsTpl ? (tdsTpl.amount || 0) : TDS_ESTIMATE;
+
   const flagged = m.payments.filter(p => p.tds && p.amount > 0);
-  if (!flagged.length) return;
+  const tdsFromPayments = flagged.reduce((s, p) => s + (Number(p.amount) || 0) * 0.10, 0);
+  const totalAmt = baseAmt + tdsFromPayments;
 
   const nextMk = nextMonthKey(mk);
   const nm = ensureMonthExists(nextMk);
-  const tdsTpl = (DB.recurringTemplate || []).find(t => /tds provisional/i.test(t.name));
-  const baseAmt = tdsTpl ? tdsTpl.amount : TDS_ESTIMATE;
-
-  // Calculate total TDS from this month's flagged payments
-  const tdsFromPayments = flagged.reduce((s, p) => s + (Number(p.amount) || 0) * 0.10, 0);
-
-  // Find existing TDS provisional in next month
   let tdsLine = nm.payments.find(p => /^TDS provisional/i.test(p.name));
   if (!tdsLine) {
-    // Create fresh entry
-    tdsLine = { id: uid(), name: `TDS provisional for ${monthLabel(nextMk)}`, amount: baseAmt + tdsFromPayments, status: 'planned', recurring: true, frequency: 'monthly', tds: false };
+    tdsLine = { id: uid(), name: `TDS provisional for ${monthLabel(nextMk)}`, amount: totalAmt, status: 'planned', recurring: true, frequency: 'monthly', tds: false };
     nm.payments.push(tdsLine);
   } else {
-    // Reset to base + this month's actual TDS deductions (never drift from repeated calls)
-    tdsLine.amount = baseAmt + tdsFromPayments;
+    // Only update if NOT already paid — don't overwrite a paid TDS amount
+    if (tdsLine.status !== 'paid') tdsLine.amount = totalAmt;
   }
-  // No _tdsRolled stamps needed — we recompute fully each time
+  // Store breakdown for popup display
+  tdsLine._tdsBreakdown = { base: baseAmt, fromPayments: tdsFromPayments, sourceMonth: mk };
 }
 
 /* ===========================================================

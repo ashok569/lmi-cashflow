@@ -1,6 +1,6 @@
 /* ===========================================================
    LMI Cashflow Manager — application logic
-   VERSION 2.4.11 — new LMI South Asia header image; Nature OTHER manual entry on PI+TI; email templates (PI: Nirali standard, TI: Nirali standard) with live template switcher; PROGRAM dropdown with auto-fill from product list; Add Freight button; max 3 program rows — adds: Product master (ADD PRODUCT, PRODUCT LIST, CSV import, OFFLINE/ONLINE/OTHER categories, MOVE button), multi-line invoice items (Add another program), dynamic Word doc (landscape, LMI South Asia header, QTY column, no freight row, multi-item rows), delete receivable PI ripple, date of supply pre-fill, cancel invoice retains delete button. — fix: Word download uses Packer.toBlob (browser-compatible) instead of Packer.toBuffer (Node-only); fix dataset.invWord reference; invBuildWordDoc returns Document not Buffer. — edit PI/TI syncs cashflow receivable amount; cancel vs permanent delete modal; invUpdateReceivableAmount() — header updated to match actual LMI India letterhead (LMI INDIA branding, Apeejay House address, CIN, email/web/tel, logo placeholder), footer updated.
+   VERSION 2.4.16 — new LMI South Asia header image; Nature OTHER manual entry on PI+TI; email templates (PI: Nirali standard, TI: Nirali standard) with live template switcher; PROGRAM dropdown with auto-fill from product list; Add Freight button; max 3 program rows — adds: Product master (ADD PRODUCT, PRODUCT LIST, CSV import, OFFLINE/ONLINE/OTHER categories, MOVE button), multi-line invoice items (Add another program), dynamic Word doc (landscape, LMI South Asia header, QTY column, no freight row, multi-item rows), delete receivable PI ripple, date of supply pre-fill, cancel invoice retains delete button. — fix: Word download uses Packer.toBlob (browser-compatible) instead of Packer.toBuffer (Node-only); fix dataset.invWord reference; invBuildWordDoc returns Document not Buffer. — edit PI/TI syncs cashflow receivable amount; cancel vs permanent delete modal; invUpdateReceivableAmount() — header updated to match actual LMI India letterhead (LMI INDIA branding, Apeejay House address, CIN, email/web/tel, logo placeholder), footer updated.
    doc output matching exact template layout (15-col table,
    all fields, borders, amounts in words), next number preview,
    invoicing module auto-opens from dashboard buttons.
@@ -359,8 +359,8 @@ function selectMonth(mk) {
     ensureMonthlyProvisions(mk);
   }
   if (isNew) {
+    recalcTDSRollup(mk); // roll this month's TDS-flagged payments into next month's TDS provisional
     const prevMk = prevMonthKey(mk);
-    recalcTDSRollup(prevMk);
     if (DB.months[prevMk]) touched.push(prevMk);
   }
   return touched;
@@ -1135,7 +1135,7 @@ function openGeneralPayment() {
     if (!payTo) { toast('Pay to is required'); return; }
     const m = getMonth(DB.selectedMonth);
     m.payments.push({ id: uid(), name: payTo, amount, status: 'paid', recurring: false, tds });
-    if (tds) bumpNextMonthTDS(amount * 0.1 > 0 ? null : null); // TDS bump handled by recalcTDS() globally on render
+    if (tds) recalcTDSRollup(DB.selectedMonth);
     saveDB(); renderAll(); closeModal();
     toast(`Recorded payment of ${fmtMoney(amount)} to ${payTo}`);
   };
@@ -1506,6 +1506,7 @@ function openEditPayment(id) {
     p.amount = parseFloat(document.getElementById('ep-amount').value) || 0;
     p.status = newStatus;
     p.tds = document.getElementById('ep-tds').checked;
+    recalcTDSRollup(DB.selectedMonth); // recomputes next month's TDS from scratch
     saveDB(); renderAll(); closeModal();
   };
 }
@@ -1633,24 +1634,34 @@ function ensureMonthlyProvisions(mk) {
 }
 
 // Roll TDS-flagged payment amounts (10%) from a month into next month's TDS provisional line, once.
+// TDS rollup — TDS deducted this month is payable NEXT month.
+// Recomputes from scratch each call: next month's TDS provisional = base template amount + 10% of all TDS-flagged payments in mk.
+// Never accumulates across calls — always a clean recalculation.
 function recalcTDSRollup(mk) {
   const m = DB.months[mk];
   if (!m) return;
-  const flagged = m.payments.filter(p => p.tds && !p._tdsRolled);
+  const flagged = m.payments.filter(p => p.tds && p.amount > 0);
   if (!flagged.length) return;
+
   const nextMk = nextMonthKey(mk);
   const nm = ensureMonthExists(nextMk);
+  const tdsTpl = (DB.recurringTemplate || []).find(t => /tds provisional/i.test(t.name));
+  const baseAmt = tdsTpl ? tdsTpl.amount : TDS_ESTIMATE;
+
+  // Calculate total TDS from this month's flagged payments
+  const tdsFromPayments = flagged.reduce((s, p) => s + (Number(p.amount) || 0) * 0.10, 0);
+
+  // Find existing TDS provisional in next month
   let tdsLine = nm.payments.find(p => /^TDS provisional/i.test(p.name));
   if (!tdsLine) {
-    // Get amount from template if available, else use constant
-    const tdsTpl = (DB.recurringTemplate || []).find(t => /tds provisional/i.test(t.name));
-    const defaultAmt = tdsTpl ? tdsTpl.amount : TDS_ESTIMATE;
-    tdsLine = { id: uid(), name: 'TDS provisional', amount: defaultAmt, status: 'planned', recurring: true, frequency: 'monthly', tds: false };
+    // Create fresh entry
+    tdsLine = { id: uid(), name: `TDS provisional for ${monthLabel(nextMk)}`, amount: baseAmt + tdsFromPayments, status: 'planned', recurring: true, frequency: 'monthly', tds: false };
     nm.payments.push(tdsLine);
+  } else {
+    // Reset to base + this month's actual TDS deductions (never drift from repeated calls)
+    tdsLine.amount = baseAmt + tdsFromPayments;
   }
-  let addAmt = 0;
-  flagged.forEach(p => { addAmt += (Number(p.amount) || 0) * 0.10; p._tdsRolled = true; });
-  tdsLine.amount = (Number(tdsLine.amount) || 0) + addAmt;
+  // No _tdsRolled stamps needed — we recompute fully each time
 }
 
 /* ===========================================================
@@ -1749,7 +1760,7 @@ function init() {
   if (!DB.currentFY) DB.currentFY = fyLabelForMonth(DB.selectedMonth);
   ensureMonthExists(DB.selectedMonth);
   ensureMonthlyProvisions(DB.selectedMonth);
-  recalcTDSRollup(prevMonthKey(DB.selectedMonth));
+  recalcTDSRollup(DB.selectedMonth);
   promoteCarriedReceivables(); // unlock carried entries now that their month is current
   syncCarriedReceivables();
   saveDB([nextMonthKey(todayMonthKey())]);
@@ -1777,7 +1788,7 @@ async function startApp() {
       migrateRecurringFrequency();  // fix any wrongly-categorised recurring items
       ensureMonthExists(DB.selectedMonth);
       ensureMonthlyProvisions(DB.selectedMonth);
-      recalcTDSRollup(prevMonthKey(DB.selectedMonth));
+      recalcTDSRollup(DB.selectedMonth);
       promoteCarriedReceivables();
       syncCarriedReceivables();
       saveDB([prevMonthKey(DB.selectedMonth), nextMonthKey(todayMonthKey())]);
@@ -1803,7 +1814,24 @@ async function startApp() {
 function migrateRecurringFrequency() {
   if (!DB.recurringTemplate) DB.recurringTemplate = [];
 
-  // 1. Fix any template entries missing frequency → default monthly
+  // 1. Fix frequency on all template entries + consolidate duplicate TDS entries
+  // Any template entry whose name is just "TDS" or "TDS provisional" → standardise to "TDS provisional"
+  const tdsEntries = DB.recurringTemplate.filter(t => /^tds\b/i.test(t.name));
+  if (tdsEntries.length > 1) {
+    // Keep the one with highest amount (most likely the correct one), remove others
+    tdsEntries.sort((a, b) => (b.amount||0) - (a.amount||0));
+    const keep = tdsEntries[0];
+    keep.name = 'TDS provisional';
+    keep.frequency = 'monthly';
+    keep.startMonth = keep.startMonth || 'Apr';
+    DB.recurringTemplate = DB.recurringTemplate.filter(t => !(/^tds\b/i.test(t.name)) || t === keep);
+  } else if (tdsEntries.length === 1) {
+    tdsEntries[0].name = 'TDS provisional';
+    tdsEntries[0].frequency = 'monthly';
+    tdsEntries[0].startMonth = tdsEntries[0].startMonth || 'Apr';
+  }
+
+  // Fix frequency on remaining entries
   DB.recurringTemplate.forEach(tpl => {
     if (!tpl.frequency) tpl.frequency = 'monthly';
     if (/tds/i.test(tpl.name) && tpl.frequency !== 'monthly') tpl.frequency = 'monthly';
@@ -1831,10 +1859,19 @@ function migrateRecurringFrequency() {
     DB.recurringTemplate.push({ id: uid(), name: 'Waco marketing fee', amount: wacoAmt, frequency: 'quarterly', startMonth: 'Apr', tds: false });
   }
 
-  // 4. Fix existing month payment rows: mark TDS and WACO as recurring with correct frequency
+  // 4. Fix existing month payment rows: normalise TDS and WACO naming + fix recurring flags
   Object.entries(DB.months || {}).forEach(([mk, m]) => {
     (m.payments || []).forEach(p => {
-      if (/^TDS provisional/i.test(p.name)) { p.recurring = true; p.frequency = 'monthly'; }
+      // Remove rollup stamp
+      delete p._tdsRolled;
+      // Rename "TDS for X" → "TDS provisional for X"
+      if (p.recurring && /^TDS for\b/i.test(p.name)) {
+        p.name = p.name.replace(/^TDS for\b/i, 'TDS provisional for');
+      }
+      if (/^TDS provisional/i.test(p.name)) {
+        p.recurring = true;
+        p.frequency = 'monthly';
+      }
       if (/waco marketing fee/i.test(p.name)) { p.recurring = true; p.frequency = 'quarterly'; }
       if (p.recurring && !p.frequency) p.frequency = 'monthly';
     });

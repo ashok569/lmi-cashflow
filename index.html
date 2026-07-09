@@ -629,8 +629,8 @@
       </div>
     </div>
 
-    <!-- Three columns: Spend | Inflow | Report -->
-    <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:18px;">
+    <!-- Four columns: Spend | Inflow | Defer | Report -->
+    <div style="display:grid; grid-template-columns:1fr 1fr 1fr 1fr; gap:18px;">
 
       <!-- COLUMN 1: Planned Spend -->
       <div class="panel">
@@ -659,11 +659,37 @@
         </div>
       </div>
 
-      <!-- COLUMN 3: Report -->
+      <!-- COLUMN 3: Defer Payments -->
+      <div class="panel">
+        <div class="panel-head">
+          <h2>Defer payment based</h2>
+          <div style="display:flex;gap:4px;font-size:11px;font-weight:700;color:var(--ink-soft);">
+            <span style="width:32px;text-align:center;">1M</span>
+            <span style="width:32px;text-align:center;">2M</span>
+            <span style="width:32px;text-align:center;">3M</span>
+          </div>
+        </div>
+        <div class="panel-body">
+          <div style="font-size:11px; color:var(--ink-soft); margin-bottom:10px;">
+            Tick unpaid payments to defer and select by how many months. See impact in report →<br>
+            Use <strong>Commit defer</strong> to actually move a payment to the target month in live data.
+          </div>
+          <div id="sp-defer-list"></div>
+          <div style="margin-top:12px; padding-top:10px; border-top:1px solid var(--line);">
+            <div style="display:flex; justify-content:space-between; font-weight:700; font-size:13px; margin-bottom:10px;">
+              <span>Total deferred</span>
+              <span id="sp-defer-total" style="font-family:var(--mono);">₹0</span>
+            </div>
+            <div id="sp-defer-commit-area"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- COLUMN 4: Report -->
       <div class="panel">
         <div class="panel-head"><h2>Projected report</h2></div>
         <div class="panel-body" id="sp-report-body">
-          <div style="color:var(--ink-soft); font-size:12.5px; font-style:italic;">Add spend and inflow items to see projections.</div>
+          <div style="color:var(--ink-soft); font-size:12.5px; font-style:italic;">Add spend, inflow or defer items to see projections.</div>
         </div>
       </div>
 

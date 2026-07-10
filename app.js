@@ -1,6 +1,6 @@
 /* ===========================================================
    LMI Cashflow Manager — application logic
-   VERSION 2.4.26 — new LMI South Asia header image; Nature OTHER manual entry on PI+TI; email templates (PI: Nirali standard, TI: Nirali standard) with live template switcher; PROGRAM dropdown with auto-fill from product list; Add Freight button; max 3 program rows — adds: Product master (ADD PRODUCT, PRODUCT LIST, CSV import, OFFLINE/ONLINE/OTHER categories, MOVE button), multi-line invoice items (Add another program), dynamic Word doc (landscape, LMI South Asia header, QTY column, no freight row, multi-item rows), delete receivable PI ripple, date of supply pre-fill, cancel invoice retains delete button. — fix: Word download uses Packer.toBlob (browser-compatible) instead of Packer.toBuffer (Node-only); fix dataset.invWord reference; invBuildWordDoc returns Document not Buffer. — edit PI/TI syncs cashflow receivable amount; cancel vs permanent delete modal; invUpdateReceivableAmount() — header updated to match actual LMI India letterhead (LMI INDIA branding, Apeejay House address, CIN, email/web/tel, logo placeholder), footer updated.
+   VERSION 2.4.27 — new LMI South Asia header image; Nature OTHER manual entry on PI+TI; email templates (PI: Nirali standard, TI: Nirali standard) with live template switcher; PROGRAM dropdown with auto-fill from product list; Add Freight button; max 3 program rows — adds: Product master (ADD PRODUCT, PRODUCT LIST, CSV import, OFFLINE/ONLINE/OTHER categories, MOVE button), multi-line invoice items (Add another program), dynamic Word doc (landscape, LMI South Asia header, QTY column, no freight row, multi-item rows), delete receivable PI ripple, date of supply pre-fill, cancel invoice retains delete button. — fix: Word download uses Packer.toBlob (browser-compatible) instead of Packer.toBuffer (Node-only); fix dataset.invWord reference; invBuildWordDoc returns Document not Buffer. — edit PI/TI syncs cashflow receivable amount; cancel vs permanent delete modal; invUpdateReceivableAmount() — header updated to match actual LMI India letterhead (LMI INDIA branding, Apeejay House address, CIN, email/web/tel, logo placeholder), footer updated.
    doc output matching exact template layout (15-col table,
    all fields, borders, amounts in words), next number preview,
    invoicing module auto-opens from dashboard buttons.
@@ -1175,6 +1175,8 @@ function openImportOrder() {
     <div class="field"><label>Order month</label>
       <select id="io-month">${monthsOfFY(DB.currentFY).map(mk => `<option value="${mk}" ${mk===DB.selectedMonth?'selected':''}>${monthLabel(mk)}</option>`).join('')}</select>
     </div>
+    <div class="field"><label>Description</label>
+      <input type="text" id="io-desc" placeholder="e.g. 50 EPP kits — Q2 order"></div>
     <div class="field-row">
       <div class="field"><label>Quantity</label><input type="number" id="io-qty" placeholder="0"></div>
       <div class="field"><label>Order amount</label><input type="number" id="io-amount" placeholder="0"></div>
@@ -1187,6 +1189,7 @@ function openImportOrder() {
   document.getElementById('io-cancel').onclick = closeModal;
   document.getElementById('io-save').onclick = () => {
     const mk = document.getElementById('io-month').value;
+    const desc = document.getElementById('io-desc').value.trim();
     const qty = parseFloat(document.getElementById('io-qty').value) || 0;
     const amount = parseFloat(document.getElementById('io-amount').value) || 0;
     const kerry = parseFloat(document.getElementById('io-kerry').value) || 0;
@@ -1195,13 +1198,13 @@ function openImportOrder() {
     if (!m.imports) m.imports = [];
     const orderNum = m.imports.length + 1;
     const id = uid();
-    m.imports.push({ id, qty, amount, kerry, ceva });
-    // also reflect in payments ledger as line items so they show in the cashflow
-    if (amount) m.payments.push({ id: uid(), name: `Import order ${orderNum} (Qty ${qty})`, amount, status: 'planned', recurring: false, tds: false, _importId: id });
-    if (kerry) m.payments.push({ id: uid(), name: `Kerry import order ${orderNum}`, amount: kerry, status: 'planned', recurring: false, tds: false, _importId: id });
-    if (ceva) m.payments.push({ id: uid(), name: `Ceva customs order ${orderNum}`, amount: ceva, status: 'planned', recurring: false, tds: false, _importId: id });
+    const orderLabel = desc || `Import order ${orderNum}`;
+    m.imports.push({ id, qty, amount, kerry, ceva, desc });
+    if (amount) m.payments.push({ id: uid(), name: `${orderLabel} (Qty ${qty})`, amount, status: 'planned', recurring: false, tds: false, _importId: id });
+    if (kerry) m.payments.push({ id: uid(), name: `Kerry — ${orderLabel}`, amount: kerry, status: 'planned', recurring: false, tds: false, _importId: id });
+    if (ceva) m.payments.push({ id: uid(), name: `Ceva customs — ${orderLabel}`, amount: ceva, status: 'planned', recurring: false, tds: false, _importId: id });
     saveDB([mk]); renderAll(); closeModal();
-    toast(`Import order ${orderNum} added for ${monthLabel(mk)}`);
+    toast(`${orderLabel} added for ${monthLabel(mk)}`);
   };
 }
 

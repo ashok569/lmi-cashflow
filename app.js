@@ -1,6 +1,6 @@
 /* ===========================================================
    LMI Cashflow Manager — application logic
-   VERSION 2.4.28 — new LMI South Asia header image; Nature OTHER manual entry on PI+TI; email templates (PI: Nirali standard, TI: Nirali standard) with live template switcher; PROGRAM dropdown with auto-fill from product list; Add Freight button; max 3 program rows — adds: Product master (ADD PRODUCT, PRODUCT LIST, CSV import, OFFLINE/ONLINE/OTHER categories, MOVE button), multi-line invoice items (Add another program), dynamic Word doc (landscape, LMI South Asia header, QTY column, no freight row, multi-item rows), delete receivable PI ripple, date of supply pre-fill, cancel invoice retains delete button. — fix: Word download uses Packer.toBlob (browser-compatible) instead of Packer.toBuffer (Node-only); fix dataset.invWord reference; invBuildWordDoc returns Document not Buffer. — edit PI/TI syncs cashflow receivable amount; cancel vs permanent delete modal; invUpdateReceivableAmount() — header updated to match actual LMI India letterhead (LMI INDIA branding, Apeejay House address, CIN, email/web/tel, logo placeholder), footer updated.
+   VERSION 2.4.29 — new LMI South Asia header image; Nature OTHER manual entry on PI+TI; email templates (PI: Nirali standard, TI: Nirali standard) with live template switcher; PROGRAM dropdown with auto-fill from product list; Add Freight button; max 3 program rows — adds: Product master (ADD PRODUCT, PRODUCT LIST, CSV import, OFFLINE/ONLINE/OTHER categories, MOVE button), multi-line invoice items (Add another program), dynamic Word doc (landscape, LMI South Asia header, QTY column, no freight row, multi-item rows), delete receivable PI ripple, date of supply pre-fill, cancel invoice retains delete button. — fix: Word download uses Packer.toBlob (browser-compatible) instead of Packer.toBuffer (Node-only); fix dataset.invWord reference; invBuildWordDoc returns Document not Buffer. — edit PI/TI syncs cashflow receivable amount; cancel vs permanent delete modal; invUpdateReceivableAmount() — header updated to match actual LMI India letterhead (LMI INDIA branding, Apeejay House address, CIN, email/web/tel, logo placeholder), footer updated.
    doc output matching exact template layout (15-col table,
    all fields, borders, amounts in words), next number preview,
    invoicing module auto-opens from dashboard buttons.
@@ -841,6 +841,8 @@ function openPaymentReceivedFor(receivableId) {
 
     let extraMk = null;
     if (gstNext && gstAmt > 0) {
+      // Store gstAmt on the receipt itself for future breakdown lookups
+      rec.gstAmt = gstAmt;
       extraMk = nextMonthKey(DB.selectedMonth);
       const nm = ensureMonthExists(extraMk);
       const existingGst = nm.payments.find(p => /^GST for/i.test(p.name));
@@ -1563,8 +1565,6 @@ function _openEditPaymentForm(id) {
       }
       // GST breakdown
       if (/^GST for/i.test(p.name)) {
-        // "GST for Aug 26" lives in August but was generated from JULY receipts
-        // So source month is always the PREVIOUS month relative to where this entry lives
         const srcMk = prevMonthKey(DB.selectedMonth);
         const srcM = DB.months[srcMk];
         const nameMonth = monthLabel(srcMk);
@@ -1572,17 +1572,23 @@ function _openEditPaymentForm(id) {
         let rows = '';
         const bd = p._gstBreakdown;
         if (bd && bd.receipts && bd.receipts.length) {
+          // Stored breakdown — shows exact GST per receipt
           rows = bd.receipts.map(r =>
             `<div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--line);font-size:12.5px;">
               <span>${escapeHtml(r.name)}</span><strong>${fmtMoney(r.gst)}</strong>
             </div>`).join('');
-        } else if (srcM && (srcM.receipts || []).length) {
-          rows = (srcM.receipts || []).map(r =>
+        } else if (srcM && (srcM.receipts || []).some(r => r.gstAmt > 0 || r.gst > 0)) {
+          // Receipts have GST stored — show GST amounts
+          rows = (srcM.receipts || []).filter(r => (r.gstAmt || r.gst || 0) > 0).map(r =>
             `<div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--line);font-size:12.5px;">
-              <span>${escapeHtml(r.name)}</span>
-              <span style="color:var(--ink-soft);font-size:11px;">receipt: ${fmtMoney(r.amount)}</span>
+              <span>${escapeHtml(r.name)}</span><strong>${fmtMoney(r.gstAmt || r.gst || 0)}</strong>
             </div>`).join('');
-          rows += `<div style="color:var(--ink-soft);font-size:11px;padding:4px 0;">Per-receipt GST split not stored — total shown below.</div>`;
+        } else if (srcM && (srcM.receipts || []).length) {
+          // Fallback — GST not stored per receipt, just show total note
+          rows = `<div style="color:var(--ink-soft);font-size:12.5px;padding:6px 0;">
+            ${(srcM.receipts || []).length} receipt(s) in ${nameMonth} — GST portion not stored per receipt.<br>
+            Total GST liability shown below.
+          </div>`;
         } else {
           rows = `<div style="color:var(--ink-soft);font-size:12.5px;padding:6px 0;">No receipts found in ${nameMonth}.</div>`;
         }
@@ -1615,10 +1621,11 @@ function _openEditPaymentForm(id) {
       const targetMk = document.getElementById('ep-schedule-month').value;
       const name = document.getElementById('ep-name').value.trim();
       const amount = parseFloat(document.getElementById('ep-amount').value) || 0;
-      const tds = document.getElementById('ep-tds').checked;
+      const tdsRate = parseFloat(document.getElementById('ep-tds').value) || 0;
+      const tds = tdsRate > 0;
       m.payments = m.payments.filter(x => x.id !== id);
       const target = ensureMonthExists(targetMk);
-      target.payments.push({ id: uid(), name, amount, status: 'planned', recurring: p.recurring, tds });
+      target.payments.push({ id: uid(), name, amount, status: 'planned', recurring: p.recurring, tds, tdsRate });
       saveDB([targetMk]); renderAll(); closeModal();
       toast(`Moved "${name}" to ${monthLabel(targetMk)}`);
       return;

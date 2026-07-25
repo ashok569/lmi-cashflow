@@ -1,6 +1,6 @@
 /* ===========================================================
    LMI Cashflow Manager — application logic
-   VERSION 2.4.29 — new LMI South Asia header image; Nature OTHER manual entry on PI+TI; email templates (PI: Nirali standard, TI: Nirali standard) with live template switcher; PROGRAM dropdown with auto-fill from product list; Add Freight button; max 3 program rows — adds: Product master (ADD PRODUCT, PRODUCT LIST, CSV import, OFFLINE/ONLINE/OTHER categories, MOVE button), multi-line invoice items (Add another program), dynamic Word doc (landscape, LMI South Asia header, QTY column, no freight row, multi-item rows), delete receivable PI ripple, date of supply pre-fill, cancel invoice retains delete button. — fix: Word download uses Packer.toBlob (browser-compatible) instead of Packer.toBuffer (Node-only); fix dataset.invWord reference; invBuildWordDoc returns Document not Buffer. — edit PI/TI syncs cashflow receivable amount; cancel vs permanent delete modal; invUpdateReceivableAmount() — header updated to match actual LMI India letterhead (LMI INDIA branding, Apeejay House address, CIN, email/web/tel, logo placeholder), footer updated.
+   VERSION 2.4.30 — new LMI South Asia header image; Nature OTHER manual entry on PI+TI; email templates (PI: Nirali standard, TI: Nirali standard) with live template switcher; PROGRAM dropdown with auto-fill from product list; Add Freight button; max 3 program rows — adds: Product master (ADD PRODUCT, PRODUCT LIST, CSV import, OFFLINE/ONLINE/OTHER categories, MOVE button), multi-line invoice items (Add another program), dynamic Word doc (landscape, LMI South Asia header, QTY column, no freight row, multi-item rows), delete receivable PI ripple, date of supply pre-fill, cancel invoice retains delete button. — fix: Word download uses Packer.toBlob (browser-compatible) instead of Packer.toBuffer (Node-only); fix dataset.invWord reference; invBuildWordDoc returns Document not Buffer. — edit PI/TI syncs cashflow receivable amount; cancel vs permanent delete modal; invUpdateReceivableAmount() — header updated to match actual LMI India letterhead (LMI INDIA branding, Apeejay House address, CIN, email/web/tel, logo placeholder), footer updated.
    doc output matching exact template layout (15-col table,
    all fields, borders, amounts in words), next number preview,
    invoicing module auto-opens from dashboard buttons.
@@ -391,8 +391,9 @@ function renderMonthTabs() {
     const hasData = !!DB.months[mk];
     return `<button class="month-tab ${active} ${isCurrent} ${hasData ? '' : 'future'}" data-mk="${mk}">${monthLabel(mk)}${isCurrent ? '<span class="dot"></span>' : ''}</button>`;
   }).join('') +
-  `<button class="month-tab ${isPendingOpen ? 'active' : ''}" id="pendingActionsTab" style="border-left:2px solid rgba(255,255,255,.15); margin-left:8px;">&#9654; Pending actions</button>` +
-  `<button class="month-tab ${isInvoicingOpen ? 'active' : ''}" id="invoicingTab" style="border-left:1px solid rgba(255,255,255,.1); margin-left:4px;">&#128196; Invoicing</button>`;
+  `<button class="month-tab ${isPendingOpen ? 'active' : ''}" id="pendingActionsTab" style="border-left:2px solid rgba(255,255,255,.15); margin-left:8px;">&#9654; Pending</button>` +
+  `<button class="month-tab ${isInvoicingOpen ? 'active' : ''}" id="invoicingTab" style="border-left:1px solid rgba(255,255,255,.1); margin-left:4px;">&#128196; Billing</button>` +
+  `<button class="month-tab ${DB.licFeeOpen ? 'active' : ''}" id="licFeeTab" style="border-left:1px solid rgba(255,255,255,.1); margin-left:4px;">&#127981; LicFee</button>`;
 
   wrap.querySelectorAll('.month-tab[data-mk]').forEach(btn => {
     btn.onclick = () => {
@@ -407,6 +408,8 @@ function renderMonthTabs() {
   if (paTab) paTab.onclick = openPendingActions;
   const invTab = document.getElementById('invoicingTab');
   if (invTab) invTab.onclick = openInvoicingModule;
+  const licFeeTabBtn = document.getElementById('licFeeTab');
+  if (licFeeTabBtn) licFeeTabBtn.onclick = openLicFeeModule;
 }
 
 function renderDashboard() {
@@ -5475,4 +5478,263 @@ function invOpenProductList() {
     reader.readAsText(file);
     e.target.value = '';
   };
+}
+
+/* ===========================================================
+   LICFEE MODULE — Licensee Fee Tracker
+   DB.licFees = [{
+     id, name, feeDue, type ('per program'|'instalment'),
+     recovered, instalments: [{date, amount, note}]
+   }]
+   =========================================================== */
+
+function licFeeInit() {
+  if (!DB.licFees) DB.licFees = [];
+}
+
+function openLicFeeModule() {
+  DB.licFeeOpen = true;
+  document.getElementById('licFeeOverlay').style.display = 'block';
+  licFeeInit();
+  licFeeRender();
+  renderMonthTabs();
+  // Wire buttons
+  document.getElementById('lf-close-btn').onclick = closeLicFeeModule;
+  document.getElementById('lf-btn-add').onclick = licFeeOpenAdd;
+  document.getElementById('lf-btn-receipt').onclick = licFeeOpenReceipt;
+}
+
+function closeLicFeeModule() {
+  DB.licFeeOpen = false;
+  document.getElementById('licFeeOverlay').style.display = 'none';
+  renderMonthTabs();
+}
+
+function licFeeRender() {
+  licFeeInit();
+  const wrap = document.getElementById('lf-table-wrap');
+  if (!wrap) return;
+
+  if (!DB.licFees.length) {
+    wrap.innerHTML = `<div class="empty-note" style="padding:30px; text-align:center;">
+      No licensees added yet. Click <strong>+ Add Licensee</strong> to begin.
+    </div>`;
+    return;
+  }
+
+  const rows = DB.licFees.map(lf => {
+    const recovered = lf.recovered || 0;
+    const feeDue = lf.feeDue || 0;
+    const balance = feeDue - recovered;
+    const pct = feeDue > 0 ? Math.round((recovered / feeDue) * 100) : 0;
+    const balColor = balance <= 0 ? 'color:#2e7d5e;font-weight:700;' : balance > feeDue * 0.5 ? 'color:#c0392b;' : 'color:#9a6b14;';
+    return `
+      <tr>
+        <td style="font-weight:600; color:var(--navy);">${escapeHtml(lf.name)}</td>
+        <td style="font-family:var(--mono); text-align:right;">${fmtMoney(feeDue)}</td>
+        <td style="font-family:var(--mono); text-align:right; color:#2e7d5e;">${fmtMoney(recovered)}</td>
+        <td style="font-family:var(--mono); text-align:right; ${balColor}">${fmtMoney(balance)}</td>
+        <td><span style="font-size:11px; background:var(--paper-2); border:1px solid var(--line); border-radius:3px; padding:2px 6px;">${escapeHtml(lf.type || 'instalment')}</span></td>
+        <td>
+          <div style="display:flex; gap:6px;">
+            <button data-lf-info="${lf.id}" title="Breakdown" class="btn btn-sm">&#8505;</button>
+            <button data-lf-edit="${lf.id}" title="Edit" class="btn btn-sm">&#9998;</button>
+            <button data-lf-del="${lf.id}" title="Delete" class="btn btn-sm" style="color:var(--red);">&#10005;</button>
+          </div>
+        </td>
+      </tr>`;
+  }).join('');
+
+  wrap.innerHTML = `
+    <table style="width:100%; border-collapse:collapse; font-size:13px;">
+      <thead>
+        <tr style="background:var(--navy); color:#fff; text-transform:uppercase; font-size:11px; letter-spacing:.06em;">
+          <th style="padding:10px 12px; text-align:left;">Licensee</th>
+          <th style="padding:10px 12px; text-align:right;">Fee Due</th>
+          <th style="padding:10px 12px; text-align:right;">Recovered</th>
+          <th style="padding:10px 12px; text-align:right;">Balance</th>
+          <th style="padding:10px 12px; text-align:left;">Type</th>
+          <th style="padding:10px 12px;"></th>
+        </tr>
+      </thead>
+      <tbody>
+        ${rows}
+      </tbody>
+    </table>`;
+
+  // Wire info buttons
+  wrap.querySelectorAll('[data-lf-info]').forEach(b => {
+    b.onclick = () => licFeeShowBreakdown(b.dataset.lfInfo);
+  });
+
+  // Wire edit buttons
+  wrap.querySelectorAll('[data-lf-edit]').forEach(b => {
+    b.onclick = () => licFeeOpenEdit(b.dataset.lfEdit);
+  });
+
+  // Wire delete buttons
+  wrap.querySelectorAll('[data-lf-del]').forEach(b => {
+    b.onclick = () => {
+      const lf = DB.licFees.find(x => x.id === b.dataset.lfDel);
+      if (!lf) return;
+      if (!confirm(`Delete licensee "${lf.name}"? This cannot be undone.`)) return;
+      DB.licFees = DB.licFees.filter(x => x.id !== b.dataset.lfDel);
+      saveDB(); licFeeRender();
+      toast(`"${lf.name}" deleted`);
+    };
+  });
+}
+
+// ── Add Licensee ────────────────────────────────────────────
+function licFeeOpenAdd() {
+  const body = `
+    <div class="field"><label>Licensee name</label>
+      <input type="text" id="lf-name" placeholder="e.g. Carpe Diem Leadership"></div>
+    <div class="field-row">
+      <div class="field"><label>Fee due (₹)</label>
+        <input type="number" id="lf-fee" placeholder="0"></div>
+      <div class="field"><label>Type</label>
+        <select id="lf-type">
+          <option value="instalment">Instalment</option>
+          <option value="per program">Per program</option>
+        </select>
+      </div>
+    </div>`;
+  openModal('Add Licensee', body,
+    `<button class="btn" id="lf-add-cancel">Cancel</button>
+     <button class="btn btn-primary" id="lf-add-save">Add</button>`);
+  document.getElementById('lf-add-cancel').onclick = closeModal;
+  document.getElementById('lf-add-save').onclick = () => {
+    const name = document.getElementById('lf-name').value.trim();
+    const feeDue = parseFloat(document.getElementById('lf-fee').value) || 0;
+    const type = document.getElementById('lf-type').value;
+    if (!name) { toast('Name is required'); return; }
+    DB.licFees.push({ id: uid(), name, feeDue, type, recovered: 0, instalments: [] });
+    saveDB(); closeModal(); licFeeRender();
+    toast(`"${name}" added`);
+  };
+}
+
+// ── Edit Licensee ───────────────────────────────────────────
+function licFeeOpenEdit(id) {
+  const lf = DB.licFees.find(x => x.id === id);
+  if (!lf) return;
+  const body = `
+    <div class="field"><label>Licensee name</label>
+      <input type="text" id="lf-name" value="${escapeHtml(lf.name)}"></div>
+    <div class="field-row">
+      <div class="field"><label>Fee due (₹)</label>
+        <input type="number" id="lf-fee" value="${lf.feeDue || 0}"></div>
+      <div class="field"><label>Type</label>
+        <select id="lf-type">
+          <option value="instalment" ${lf.type==='instalment'?'selected':''}>Instalment</option>
+          <option value="per program" ${lf.type==='per program'?'selected':''}>Per program</option>
+        </select>
+      </div>
+    </div>`;
+  openModal('Edit Licensee', body,
+    `<button class="btn" id="lf-edit-cancel">Cancel</button>
+     <button class="btn btn-primary" id="lf-edit-save">Save</button>`);
+  document.getElementById('lf-edit-cancel').onclick = closeModal;
+  document.getElementById('lf-edit-save').onclick = () => {
+    lf.name = document.getElementById('lf-name').value.trim() || lf.name;
+    lf.feeDue = parseFloat(document.getElementById('lf-fee').value) || 0;
+    lf.type = document.getElementById('lf-type').value;
+    saveDB(); closeModal(); licFeeRender();
+    toast(`"${lf.name}" updated`);
+  };
+}
+
+// ── Receipt ─────────────────────────────────────────────────
+function licFeeOpenReceipt() {
+  licFeeInit();
+  if (!DB.licFees.length) { toast('Add a licensee first'); return; }
+  const body = `
+    <div class="field"><label>Licensee</label>
+      <select id="lf-recv-who">
+        ${DB.licFees.map(lf => `<option value="${lf.id}">${escapeHtml(lf.name)}</option>`).join('')}
+      </select>
+    </div>
+    <div class="field-row">
+      <div class="field"><label>Amount received (₹)</label>
+        <input type="number" id="lf-recv-amt" placeholder="0"></div>
+      <div class="field"><label>Date</label>
+        <input type="date" id="lf-recv-date" value="${new Date().toISOString().slice(0,10)}"></div>
+    </div>
+    <div class="field"><label>Note (optional)</label>
+      <input type="text" id="lf-recv-note" placeholder="e.g. Instalment 1 of 3"></div>`;
+  openModal('Record receipt', body,
+    `<button class="btn" id="lf-recv-cancel">Cancel</button>
+     <button class="btn btn-primary" id="lf-recv-save">Save</button>`);
+  document.getElementById('lf-recv-cancel').onclick = closeModal;
+  document.getElementById('lf-recv-save').onclick = () => {
+    const id = document.getElementById('lf-recv-who').value;
+    const amt = parseFloat(document.getElementById('lf-recv-amt').value) || 0;
+    const date = document.getElementById('lf-recv-date').value;
+    const note = document.getElementById('lf-recv-note').value.trim();
+    if (!amt) { toast('Enter an amount'); return; }
+    const lf = DB.licFees.find(x => x.id === id);
+    if (!lf) return;
+    if (!lf.instalments) lf.instalments = [];
+    lf.instalments.push({ id: uid(), date, amount: amt, note });
+    lf.recovered = (lf.recovered || 0) + amt;
+    saveDB(); closeModal(); licFeeRender();
+    toast(`₹${amt.toLocaleString('en-IN')} recorded for "${lf.name}"`);
+  };
+}
+
+// ── Breakdown popup ─────────────────────────────────────────
+function licFeeShowBreakdown(id) {
+  const lf = DB.licFees.find(x => x.id === id);
+  if (!lf) return;
+  const feeDue = lf.feeDue || 0;
+  const instalments = lf.instalments || [];
+  const recovered = lf.recovered || 0;
+  const balance = feeDue - recovered;
+
+  const rows = instalments.length
+    ? instalments.map((inst, i) => {
+        const runningRecovered = instalments.slice(0, i+1).reduce((s, x) => s + x.amount, 0);
+        const runningBalance = feeDue - runningRecovered;
+        return `
+          <tr>
+            <td style="padding:6px 10px; font-size:12px; color:var(--ink-soft);">${inst.date || '—'}</td>
+            <td style="padding:6px 10px; font-size:12px;">${escapeHtml(inst.note || `Payment ${i+1}`)}</td>
+            <td style="padding:6px 10px; font-family:var(--mono); text-align:right; color:#2e7d5e; font-size:12px;">${fmtMoney(inst.amount)}</td>
+            <td style="padding:6px 10px; font-family:var(--mono); text-align:right; font-size:12px; ${runningBalance<=0?'color:#2e7d5e;font-weight:700;':'color:#9a6b14;'}">${fmtMoney(runningBalance)}</td>
+          </tr>`;
+      }).join('')
+    : `<tr><td colspan="4" style="padding:12px; color:var(--ink-soft); text-align:center; font-size:13px;">No payments recorded yet.</td></tr>`;
+
+  const body = `
+    <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:12px; margin-bottom:16px;">
+      <div style="background:var(--paper-2); border-radius:6px; padding:10px 14px; text-align:center;">
+        <div style="font-size:10.5px; color:var(--ink-soft); text-transform:uppercase; letter-spacing:.06em;">Fee Due</div>
+        <div style="font-family:var(--mono); font-size:16px; font-weight:700; color:var(--navy); margin-top:4px;">${fmtMoney(feeDue)}</div>
+      </div>
+      <div style="background:var(--paper-2); border-radius:6px; padding:10px 14px; text-align:center;">
+        <div style="font-size:10.5px; color:var(--ink-soft); text-transform:uppercase; letter-spacing:.06em;">Recovered</div>
+        <div style="font-family:var(--mono); font-size:16px; font-weight:700; color:#2e7d5e; margin-top:4px;">${fmtMoney(recovered)}</div>
+      </div>
+      <div style="background:var(--paper-2); border-radius:6px; padding:10px 14px; text-align:center;">
+        <div style="font-size:10.5px; color:var(--ink-soft); text-transform:uppercase; letter-spacing:.06em;">Balance</div>
+        <div style="font-family:var(--mono); font-size:16px; font-weight:700; ${balance<=0?'color:#2e7d5e;':'color:#c0392b;'} margin-top:4px;">${fmtMoney(balance)}</div>
+      </div>
+    </div>
+    <div style="font-size:11px; font-weight:700; color:var(--navy); text-transform:uppercase; letter-spacing:.06em; margin-bottom:8px;">Payment history</div>
+    <table style="width:100%; border-collapse:collapse;">
+      <thead>
+        <tr style="background:var(--paper-2); font-size:11px; color:var(--ink-soft); text-transform:uppercase;">
+          <th style="padding:6px 10px; text-align:left;">Date</th>
+          <th style="padding:6px 10px; text-align:left;">Note</th>
+          <th style="padding:6px 10px; text-align:right;">Amount</th>
+          <th style="padding:6px 10px; text-align:right;">Balance after</th>
+        </tr>
+      </thead>
+      <tbody>${rows}</tbody>
+    </table>`;
+
+  openModal(`${escapeHtml(lf.name)} — Fee breakdown`, body,
+    `<button class="btn btn-primary" id="lf-info-close">Close</button>`);
+  document.getElementById('lf-info-close').onclick = closeModal;
 }

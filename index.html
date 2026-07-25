@@ -1824,5 +1824,17 @@
 <script src="https://cdn.jsdelivr.net/npm/docx@8.5.0/build/index.umd.js"></script>
 <script src="sync.js"></script>
 <script src="app.js"></script>
+<!-- LicFee Module Overlay -->
+<div id="licFeeOverlay" style="display:none; position:fixed; inset:0; background:var(--paper); z-index:80; overflow-y:auto; padding:24px 28px;">
+  <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:20px; flex-wrap:wrap; gap:10px;">
+    <h2 style="font-family:var(--serif); font-size:22px; color:var(--navy); margin:0;">&#127981; Licensee Fee Tracker</h2>
+    <div style="display:flex; gap:8px; flex-wrap:wrap;">
+      <button class="btn btn-primary" id="lf-btn-add">+ Add Licensee</button>
+      <button class="btn" id="lf-btn-receipt">&#128178; Receipt</button>
+      <button class="btn" id="lf-close-btn">&#10005; Close</button>
+    </div>
+  </div>
+  <div id="lf-table-wrap"></div>
+</div>
 </body>
 </html>

@@ -100,6 +100,7 @@ async function cloudLoadAll() {
     recurringTemplate: (ws && ws.recurring_template) || [],
     pendingActions: (ws && ws.pending_actions) || { NIRALI: [], ASHOK: [], SANDEEP: [], COMPLETED: [] },
     invoicing: (ws && ws.invoicing) || null,
+    licFees: (ws && ws.lic_fees) || [],
     currentFY: (ws && ws.current_fy) || '26-27',
     selectedMonth: null,
     _workspaceId: ws && ws.id,
@@ -180,6 +181,7 @@ async function flushCloudSave() {
         recurring_template: DB.recurringTemplate,
         pending_actions: DB.pendingActions || {},
         invoicing: DB.invoicing || null,
+        lic_fees: DB.licFees || [],
         current_fy: DB.currentFY,
         updated_at: new Date().toISOString(),
         updated_by: currentUserLabel(),
@@ -232,6 +234,7 @@ function handleWorkspaceChange(payload) {
   DB.recurringTemplate = row.recurring_template || [];
   DB.pendingActions = row.pending_actions || { NIRALI: [], ASHOK: [], SANDEEP: [], COMPLETED: [] };
   if (row.invoicing) DB.invoicing = row.invoicing;
+  if (row.lic_fees) DB.licFees = row.lic_fees;
   DB.currentFY = row.current_fy || DB.currentFY;
   renderAll();
   // If Pending Actions board is open, re-render it too

@@ -1,6 +1,6 @@
 /* ===========================================================
    LMI Cashflow Manager — application logic
-   VERSION 2.4.33 — new LMI South Asia header image; Nature OTHER manual entry on PI+TI; email templates (PI: Nirali standard, TI: Nirali standard) with live template switcher; PROGRAM dropdown with auto-fill from product list; Add Freight button; max 3 program rows — adds: Product master (ADD PRODUCT, PRODUCT LIST, CSV import, OFFLINE/ONLINE/OTHER categories, MOVE button), multi-line invoice items (Add another program), dynamic Word doc (landscape, LMI South Asia header, QTY column, no freight row, multi-item rows), delete receivable PI ripple, date of supply pre-fill, cancel invoice retains delete button. — fix: Word download uses Packer.toBlob (browser-compatible) instead of Packer.toBuffer (Node-only); fix dataset.invWord reference; invBuildWordDoc returns Document not Buffer. — edit PI/TI syncs cashflow receivable amount; cancel vs permanent delete modal; invUpdateReceivableAmount() — header updated to match actual LMI India letterhead (LMI INDIA branding, Apeejay House address, CIN, email/web/tel, logo placeholder), footer updated.
+   VERSION 2.4.34 — new LMI South Asia header image; Nature OTHER manual entry on PI+TI; email templates (PI: Nirali standard, TI: Nirali standard) with live template switcher; PROGRAM dropdown with auto-fill from product list; Add Freight button; max 3 program rows — adds: Product master (ADD PRODUCT, PRODUCT LIST, CSV import, OFFLINE/ONLINE/OTHER categories, MOVE button), multi-line invoice items (Add another program), dynamic Word doc (landscape, LMI South Asia header, QTY column, no freight row, multi-item rows), delete receivable PI ripple, date of supply pre-fill, cancel invoice retains delete button. — fix: Word download uses Packer.toBlob (browser-compatible) instead of Packer.toBuffer (Node-only); fix dataset.invWord reference; invBuildWordDoc returns Document not Buffer. — edit PI/TI syncs cashflow receivable amount; cancel vs permanent delete modal; invUpdateReceivableAmount() — header updated to match actual LMI India letterhead (LMI INDIA branding, Apeejay House address, CIN, email/web/tel, logo placeholder), footer updated.
    doc output matching exact template layout (15-col table,
    all fields, borders, amounts in words), next number preview,
    invoicing module auto-opens from dashboard buttons.
@@ -988,17 +988,27 @@ function renderRecurringEditor() {
     };
   });
 
+  // Capture the current month at the time the modal is opened
+  const recurEditFromMk = DB.selectedMonth;
+
   document.getElementById('rec-save').onclick = () => {
     document.querySelectorAll('[data-rec-idx]').forEach(inp => {
       const idx = parseInt(inp.dataset.recIdx, 10);
       DB.recurringTemplate[idx].amount = parseFloat(inp.value) || 0;
     });
-    // Apply from the currently selected month — never touches earlier months
-    const fromMk = DB.selectedMonth;
-    const touched = applyRecurringForward(fromMk);
-    touched.forEach(mk => ensureMonthlyProvisions(mk));
-    saveDB(touched); renderAll(); closeModal();
-    toast(`Recurring payments updated from ${monthLabel(fromMk)} onward`);
+    // Apply only from recurEditFromMk forward — hard filter ensures no past months touched or saved
+    const touched = applyRecurringForward(recurEditFromMk);
+    const safeTouched = touched.filter(mk => mk >= recurEditFromMk);
+    safeTouched.forEach(mk => ensureMonthlyProvisions(mk));
+    // Save workspace template + safe months only (bypass saveDB's auto-include of selectedMonth)
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(DB));
+    if (window.Cloud && Cloud.cloudConfigured() && Cloud.currentUser) {
+      Cloud.setSyncStatus('saving');
+      Cloud.queueCloudSave(null); // workspace
+      safeTouched.forEach(mk => Cloud.queueCloudSave(mk));
+    }
+    renderAll(); closeModal();
+    toast(`Recurring payments updated from ${monthLabel(recurEditFromMk)} onward`);
   };
 }
 

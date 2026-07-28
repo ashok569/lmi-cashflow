@@ -1,6 +1,6 @@
 /* ===========================================================
    LMI Cashflow Manager — application logic
-   VERSION 2.4.34 — new LMI South Asia header image; Nature OTHER manual entry on PI+TI; email templates (PI: Nirali standard, TI: Nirali standard) with live template switcher; PROGRAM dropdown with auto-fill from product list; Add Freight button; max 3 program rows — adds: Product master (ADD PRODUCT, PRODUCT LIST, CSV import, OFFLINE/ONLINE/OTHER categories, MOVE button), multi-line invoice items (Add another program), dynamic Word doc (landscape, LMI South Asia header, QTY column, no freight row, multi-item rows), delete receivable PI ripple, date of supply pre-fill, cancel invoice retains delete button. — fix: Word download uses Packer.toBlob (browser-compatible) instead of Packer.toBuffer (Node-only); fix dataset.invWord reference; invBuildWordDoc returns Document not Buffer. — edit PI/TI syncs cashflow receivable amount; cancel vs permanent delete modal; invUpdateReceivableAmount() — header updated to match actual LMI India letterhead (LMI INDIA branding, Apeejay House address, CIN, email/web/tel, logo placeholder), footer updated.
+   VERSION 2.4.35 — new LMI South Asia header image; Nature OTHER manual entry on PI+TI; email templates (PI: Nirali standard, TI: Nirali standard) with live template switcher; PROGRAM dropdown with auto-fill from product list; Add Freight button; max 3 program rows — adds: Product master (ADD PRODUCT, PRODUCT LIST, CSV import, OFFLINE/ONLINE/OTHER categories, MOVE button), multi-line invoice items (Add another program), dynamic Word doc (landscape, LMI South Asia header, QTY column, no freight row, multi-item rows), delete receivable PI ripple, date of supply pre-fill, cancel invoice retains delete button. — fix: Word download uses Packer.toBlob (browser-compatible) instead of Packer.toBuffer (Node-only); fix dataset.invWord reference; invBuildWordDoc returns Document not Buffer. — edit PI/TI syncs cashflow receivable amount; cancel vs permanent delete modal; invUpdateReceivableAmount() — header updated to match actual LMI India letterhead (LMI INDIA branding, Apeejay House address, CIN, email/web/tel, logo placeholder), footer updated.
    doc output matching exact template layout (15-col table,
    all fields, borders, amounts in words), next number preview,
    invoicing module auto-opens from dashboard buttons.
@@ -896,7 +896,7 @@ function renderRecurringEditor() {
     return `
       <div class="sub-list-item" style="cursor:default; display:flex; align-items:center; gap:6px;">
         ${freqBadge(r.frequency)}
-        <span style="flex:1; font-size:13px;">${escapeHtml(r.name)}${r.startMonth ? ` <span style="font-size:11px;color:var(--ink-soft);">(from ${r.startMonth})</span>` : ''}</span>
+        <span style="flex:1; font-size:13px;">${escapeHtml(r.name)}${r.startMonth ? ` <span style="font-size:11px;color:var(--ink-soft);">(from ${r.startMonth})</span>` : ''}${r.effectiveFrom ? ` <span style="font-size:11px;color:#9a6b14;">*new amt from ${monthLabel(r.effectiveFrom)}</span>` : ''}</span>
         <input type="number" data-rec-idx="${i}" value="${r.amount}"
           style="width:100px;padding:5px 8px;border:1px solid var(--line);border-radius:4px;font-family:var(--mono);">
         <button data-rec-del="${i}" style="border:none;background:none;color:#aab2bd;cursor:pointer;">&#10005;</button>
@@ -994,7 +994,12 @@ function renderRecurringEditor() {
   document.getElementById('rec-save').onclick = () => {
     document.querySelectorAll('[data-rec-idx]').forEach(inp => {
       const idx = parseInt(inp.dataset.recIdx, 10);
-      DB.recurringTemplate[idx].amount = parseFloat(inp.value) || 0;
+      const newAmt = parseFloat(inp.value) || 0;
+      const tpl = DB.recurringTemplate[idx];
+      if (tpl && newAmt !== tpl.amount) {
+        tpl.amount = newAmt;
+        tpl.effectiveFrom = recurEditFromMk; // record when this amount takes effect
+      }
     });
     // Apply only from recurEditFromMk forward — hard filter ensures no past months touched or saved
     const touched = applyRecurringForward(recurEditFromMk);
@@ -1041,17 +1046,21 @@ function applyRecurringForward(fromMk) {
       const existing = m.payments.find(p => p.recurring &&
         p.name.toLowerCase().replace(/\s+for\s+.+$/i, '') === tpl.name.toLowerCase());
 
+      // Amount to use: if tpl has effectiveFrom and this month is before it, use existing amount
+      const tplAmount = (tpl.effectiveFrom && mk < tpl.effectiveFrom)
+        ? (existing ? existing.amount : tpl.amount)  // keep existing for past months
+        : tpl.amount;
+
       if (existing) {
-        // Only update unpaid entries in fromMk and later — never touch earlier months
-        if (!isPastMonth && existing.status !== 'paid') {
-          existing.amount = tpl.amount;
+        if (!isPastMonth && existing.status !== 'paid' && !(tpl.effectiveFrom && mk < tpl.effectiveFrom)) {
+          existing.amount = tplAmount;
           existing.frequency = freq;
         }
       } else if (!isPastMonth) {
         m.payments.push({
           id: uid(),
           name: `${tpl.name} for ${monthLabel(mk)}`,
-          amount: tpl.amount,
+          amount: tplAmount,
           status: 'planned',
           recurring: true,
           frequency: freq,
@@ -1762,11 +1771,14 @@ function ensureMonthlyProvisions(mk) {
     const existing = m.payments.find(p => p.recurring &&
       p.name.toLowerCase().replace(/\s+for\s+.+$/i, '') === tpl.name.toLowerCase());
     if (!existing) {
-      // Only seed new entries — never update amounts in existing entries here
+      // Use effectiveFrom-aware amount
+      const tplAmount = (tpl.effectiveFrom && mk < tpl.effectiveFrom)
+        ? 0  // shouldn't seed with future amount in past month
+        : tpl.amount;
       m.payments.push({
         id: uid(),
         name: `${tpl.name} for ${monthLabel(mk)}`,
-        amount: tpl.amount,
+        amount: tplAmount,
         status: 'planned',
         recurring: true,
         frequency: freq,

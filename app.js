@@ -1,6 +1,6 @@
 /* ===========================================================
    LMI Cashflow Manager — application logic
-   VERSION 2.4.30 — new LMI South Asia header image; Nature OTHER manual entry on PI+TI; email templates (PI: Nirali standard, TI: Nirali standard) with live template switcher; PROGRAM dropdown with auto-fill from product list; Add Freight button; max 3 program rows — adds: Product master (ADD PRODUCT, PRODUCT LIST, CSV import, OFFLINE/ONLINE/OTHER categories, MOVE button), multi-line invoice items (Add another program), dynamic Word doc (landscape, LMI South Asia header, QTY column, no freight row, multi-item rows), delete receivable PI ripple, date of supply pre-fill, cancel invoice retains delete button. — fix: Word download uses Packer.toBlob (browser-compatible) instead of Packer.toBuffer (Node-only); fix dataset.invWord reference; invBuildWordDoc returns Document not Buffer. — edit PI/TI syncs cashflow receivable amount; cancel vs permanent delete modal; invUpdateReceivableAmount() — header updated to match actual LMI India letterhead (LMI INDIA branding, Apeejay House address, CIN, email/web/tel, logo placeholder), footer updated.
+   VERSION 2.4.31 — new LMI South Asia header image; Nature OTHER manual entry on PI+TI; email templates (PI: Nirali standard, TI: Nirali standard) with live template switcher; PROGRAM dropdown with auto-fill from product list; Add Freight button; max 3 program rows — adds: Product master (ADD PRODUCT, PRODUCT LIST, CSV import, OFFLINE/ONLINE/OTHER categories, MOVE button), multi-line invoice items (Add another program), dynamic Word doc (landscape, LMI South Asia header, QTY column, no freight row, multi-item rows), delete receivable PI ripple, date of supply pre-fill, cancel invoice retains delete button. — fix: Word download uses Packer.toBlob (browser-compatible) instead of Packer.toBuffer (Node-only); fix dataset.invWord reference; invBuildWordDoc returns Document not Buffer. — edit PI/TI syncs cashflow receivable amount; cancel vs permanent delete modal; invUpdateReceivableAmount() — header updated to match actual LMI India letterhead (LMI INDIA branding, Apeejay House address, CIN, email/web/tel, logo placeholder), footer updated.
    doc output matching exact template layout (15-col table,
    all fields, borders, amounts in words), next number preview,
    invoicing module auto-opens from dashboard buttons.
@@ -993,10 +993,12 @@ function renderRecurringEditor() {
       const idx = parseInt(inp.dataset.recIdx, 10);
       DB.recurringTemplate[idx].amount = parseFloat(inp.value) || 0;
     });
-    const touched = applyRecurringForward(DB.selectedMonth);
+    // Always apply from TODAY forward — never touch past months
+    const fromMk = todayMonthKey();
+    const touched = applyRecurringForward(fromMk);
     touched.forEach(mk => ensureMonthlyProvisions(mk));
     saveDB(touched); renderAll(); closeModal();
-    toast(`Recurring payments updated from ${monthLabel(DB.selectedMonth)} onward`);
+    toast(`Recurring payments updated from ${monthLabel(fromMk)} onward`);
   };
 }
 
@@ -1005,7 +1007,9 @@ function renderRecurringEditor() {
 // Respects frequency: monthly=every month, quarterly=every 3rd month from startMonth,
 // annual=only the startMonth each year.
 function applyRecurringForward(fromMk) {
-  const months = monthsOfFY(fyLabelForMonth(fromMk)).filter(mk => mk >= fromMk);
+  // Never touch months before today — edits only apply to current month and future
+  const effectiveMk = fromMk > todayMonthKey() ? fromMk : todayMonthKey();
+  const months = monthsOfFY(fyLabelForMonth(effectiveMk)).filter(mk => mk >= effectiveMk);
 
   months.forEach(mk => {
     const m = ensureMonthExists(mk);
@@ -1029,12 +1033,14 @@ function applyRecurringForward(fromMk) {
       }
       if (!applies) return;
 
-      // Match by template name (strip month suffix from existing entries for comparison)
       const existing = m.payments.find(p => p.recurring &&
         p.name.toLowerCase().replace(/\s+for\s+.+$/i, '') === tpl.name.toLowerCase());
       if (existing) {
-        existing.amount = tpl.amount;
-        existing.frequency = freq; // ensure frequency is up to date
+        // Only update amount if not already paid — never revise a completed payment
+        if (existing.status !== 'paid') {
+          existing.amount = tpl.amount;
+          existing.frequency = freq;
+        }
       } else {
         m.payments.push({
           id: uid(),

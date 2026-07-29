@@ -1,6 +1,6 @@
 /* ===========================================================
    LMI Cashflow Manager — application logic
-   VERSION 2.4.45 — new LMI South Asia header image; Nature OTHER manual entry on PI+TI; email templates (PI: Nirali standard, TI: Nirali standard) with live template switcher; PROGRAM dropdown with auto-fill from product list; Add Freight button; max 3 program rows — adds: Product master (ADD PRODUCT, PRODUCT LIST, CSV import, OFFLINE/ONLINE/OTHER categories, MOVE button), multi-line invoice items (Add another program), dynamic Word doc (landscape, LMI South Asia header, QTY column, no freight row, multi-item rows), delete receivable PI ripple, date of supply pre-fill, cancel invoice retains delete button. — fix: Word download uses Packer.toBlob (browser-compatible) instead of Packer.toBuffer (Node-only); fix dataset.invWord reference; invBuildWordDoc returns Document not Buffer. — edit PI/TI syncs cashflow receivable amount; cancel vs permanent delete modal; invUpdateReceivableAmount() — header updated to match actual LMI India letterhead (LMI INDIA branding, Apeejay House address, CIN, email/web/tel, logo placeholder), footer updated.
+   VERSION 2.4.47 — new LMI South Asia header image; Nature OTHER manual entry on PI+TI; email templates (PI: Nirali standard, TI: Nirali standard) with live template switcher; PROGRAM dropdown with auto-fill from product list; Add Freight button; max 3 program rows — adds: Product master (ADD PRODUCT, PRODUCT LIST, CSV import, OFFLINE/ONLINE/OTHER categories, MOVE button), multi-line invoice items (Add another program), dynamic Word doc (landscape, LMI South Asia header, QTY column, no freight row, multi-item rows), delete receivable PI ripple, date of supply pre-fill, cancel invoice retains delete button. — fix: Word download uses Packer.toBlob (browser-compatible) instead of Packer.toBuffer (Node-only); fix dataset.invWord reference; invBuildWordDoc returns Document not Buffer. — edit PI/TI syncs cashflow receivable amount; cancel vs permanent delete modal; invUpdateReceivableAmount() — header updated to match actual LMI India letterhead (LMI INDIA branding, Apeejay House address, CIN, email/web/tel, logo placeholder), footer updated.
    doc output matching exact template layout (15-col table,
    all fields, borders, amounts in words), next number preview,
    invoicing module auto-opens from dashboard buttons.
@@ -1054,6 +1054,13 @@ function applyRecurringForward(fromMk) {
       else if (freq === 'annual') applies = mkMonthShort === startMonth;
       if (!applies) return;
 
+      // startMonth check: don't seed before startMonth
+      if (tpl.startMonth) {
+        const startMonthNum = MONTHS_SHORT.indexOf(tpl.startMonth) + 1;
+        const startMk = `${mk.slice(0,4)}-${String(startMonthNum).padStart(2,'0')}`;
+        if (mk < startMk) return;
+      }
+
       const existing = m.payments.find(p => p.recurring &&
         p.name.toLowerCase().replace(/\s+for\s+.+$/i, '') === tpl.name.toLowerCase());
 
@@ -1770,13 +1777,17 @@ function ensureMonthlyProvisions(mk) {
     else if (freq === 'quarterly') applies = (mkMonthIdx - startIdx + 12) % 12 % 3 === 0;
     else if (freq === 'annual') applies = mkMonthShort === startMonth;
     if (!applies) return;
-    // Additional check: if startMonth is specified, don't seed this month if it's before startMonth
-    // This prevents a new item added with startMonth=Aug from appearing in Jul
-    if (tpl.startMonth && tpl.startMonth !== 'Jan') {
-      // Convert startMonth to a month key for comparison
-      const startMk = mk.slice(0,5) + String(MONTHS_SHORT.indexOf(tpl.startMonth) + 1).padStart(2,'0');
-      // If this month is before startMonth in the same year, skip
-      if (mk < startMk && mk.slice(0,4) === startMk.slice(0,4)) return;
+    // startMonth check: don't seed this month if it's before startMonth
+    if (tpl.startMonth) {
+      const startMonthNum = MONTHS_SHORT.indexOf(tpl.startMonth) + 1; // 1-12
+      const mkMonthNum = mkMonthIdx + 1; // 1-12
+      const mkYear = parseInt(mk.slice(0,4));
+      const startMk = `${mkYear}-${String(startMonthNum).padStart(2,'0')}`;
+      // Skip if this month is before startMonth (same year comparison)
+      if (mk < startMk) {
+        console.log(`  SKIPPED ${mk} for "${tpl.name}" (before startMonth ${tpl.startMonth})`);
+        return;
+      }
     }
 
     const existing = m.payments.find(p => p.recurring &&
@@ -1937,9 +1948,12 @@ function init() {
   if (!DB.selectedMonth) DB.selectedMonth = todayMonthKey();
   if (!DB.currentFY) DB.currentFY = fyLabelForMonth(DB.selectedMonth);
   ensureMonthExists(DB.selectedMonth);
-  ensureMonthlyProvisions(DB.selectedMonth);
+  // Only provision if this month has never been provisioned and is current/future
+  if (!DB.months[DB.selectedMonth]?._provisioned && DB.selectedMonth >= todayMonthKey()) {
+    ensureMonthlyProvisions(DB.selectedMonth);
+  }
   recalcTDSRollup(DB.selectedMonth);
-  promoteCarriedReceivables(); // unlock carried entries now that their month is current
+  promoteCarriedReceivables();
   syncCarriedReceivables();
   saveDB([nextMonthKey(todayMonthKey())]);
   wireActionBar();
@@ -1963,9 +1977,12 @@ async function startApp() {
       }
       if (!DB.selectedMonth) DB.selectedMonth = todayMonthKey();
       if (!DB.currentFY) DB.currentFY = fyLabelForMonth(DB.selectedMonth);
-      migrateRecurringFrequency();  // fix any wrongly-categorised recurring items
+      migrateRecurringFrequency();
       ensureMonthExists(DB.selectedMonth);
-      ensureMonthlyProvisions(DB.selectedMonth);
+      // Only provision if genuinely new/unvisited and current or future month
+      if (!DB.months[DB.selectedMonth]?._provisioned && DB.selectedMonth >= todayMonthKey()) {
+        ensureMonthlyProvisions(DB.selectedMonth);
+      }
       recalcTDSRollup(DB.selectedMonth);
       promoteCarriedReceivables();
       syncCarriedReceivables();

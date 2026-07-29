@@ -1,6 +1,6 @@
 /* ===========================================================
    LMI Cashflow Manager — application logic
-   VERSION 2.4.38 — new LMI South Asia header image; Nature OTHER manual entry on PI+TI; email templates (PI: Nirali standard, TI: Nirali standard) with live template switcher; PROGRAM dropdown with auto-fill from product list; Add Freight button; max 3 program rows — adds: Product master (ADD PRODUCT, PRODUCT LIST, CSV import, OFFLINE/ONLINE/OTHER categories, MOVE button), multi-line invoice items (Add another program), dynamic Word doc (landscape, LMI South Asia header, QTY column, no freight row, multi-item rows), delete receivable PI ripple, date of supply pre-fill, cancel invoice retains delete button. — fix: Word download uses Packer.toBlob (browser-compatible) instead of Packer.toBuffer (Node-only); fix dataset.invWord reference; invBuildWordDoc returns Document not Buffer. — edit PI/TI syncs cashflow receivable amount; cancel vs permanent delete modal; invUpdateReceivableAmount() — header updated to match actual LMI India letterhead (LMI INDIA branding, Apeejay House address, CIN, email/web/tel, logo placeholder), footer updated.
+   VERSION 2.4.39 — new LMI South Asia header image; Nature OTHER manual entry on PI+TI; email templates (PI: Nirali standard, TI: Nirali standard) with live template switcher; PROGRAM dropdown with auto-fill from product list; Add Freight button; max 3 program rows — adds: Product master (ADD PRODUCT, PRODUCT LIST, CSV import, OFFLINE/ONLINE/OTHER categories, MOVE button), multi-line invoice items (Add another program), dynamic Word doc (landscape, LMI South Asia header, QTY column, no freight row, multi-item rows), delete receivable PI ripple, date of supply pre-fill, cancel invoice retains delete button. — fix: Word download uses Packer.toBlob (browser-compatible) instead of Packer.toBuffer (Node-only); fix dataset.invWord reference; invBuildWordDoc returns Document not Buffer. — edit PI/TI syncs cashflow receivable amount; cancel vs permanent delete modal; invUpdateReceivableAmount() — header updated to match actual LMI India letterhead (LMI INDIA branding, Apeejay House address, CIN, email/web/tel, logo placeholder), footer updated.
    doc output matching exact template layout (15-col table,
    all fields, borders, amounts in words), next number preview,
    invoicing module auto-opens from dashboard buttons.
@@ -1043,11 +1043,9 @@ function applyRecurringForward(fromMk) {
         p.name.toLowerCase().replace(/\s+for\s+.+$/i, '') === tpl.name.toLowerCase());
 
       if (existing) {
-        // NEVER update existing payment amounts — user controls those per-month
-        // Only update frequency metadata which is not financial data
-        existing.frequency = freq;
+        // Entry already exists and is locked — never touch it
+        return;
       } else {
-        // Only create new entries — never touch existing ones
         m.payments.push({
           id: uid(),
           name: `${tpl.name} for ${monthLabel(mk)}`,
@@ -1056,6 +1054,7 @@ function applyRecurringForward(fromMk) {
           recurring: true,
           frequency: freq,
           tds: !!tpl.tds,
+          _locked: true,
         });
       }
     });
@@ -1774,6 +1773,7 @@ function ensureMonthlyProvisions(mk) {
         recurring: true,
         frequency: freq,
         tds: !!tpl.tds,
+        _locked: true,
       });
     }
   });
@@ -1805,7 +1805,7 @@ function recalcTDSRollup(mk) {
   const nm = ensureMonthExists(nextMk);
   let tdsLine = nm.payments.find(p => /^TDS provisional/i.test(p.name));
   if (!tdsLine) {
-    tdsLine = { id: uid(), name: `TDS provisional for ${monthLabel(nextMk)}`, amount: totalAmt, status: 'planned', recurring: true, frequency: 'monthly', tds: false };
+    tdsLine = { id: uid(), name: `TDS provisional for ${monthLabel(nextMk)}`, amount: totalAmt, status: 'planned', recurring: true, frequency: 'monthly', tds: false, _locked: true };
     nm.payments.push(tdsLine);
   } else {
     if (tdsLine.status !== 'paid') tdsLine.amount = totalAmt;
@@ -2084,6 +2084,13 @@ function migrateRecurringFrequency() {
       }
       seen.add(key);
       return true;
+    });
+  });
+
+  // Lock all existing recurring payment rows — template changes will never overwrite them
+  Object.values(DB.months || {}).forEach(m => {
+    (m.payments || []).forEach(p => {
+      if (p.recurring && !p._locked) p._locked = true;
     });
   });
 

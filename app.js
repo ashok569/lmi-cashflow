@@ -1,6 +1,6 @@
 /* ===========================================================
    LMI Cashflow Manager — application logic
-   VERSION 2.4.36 — new LMI South Asia header image; Nature OTHER manual entry on PI+TI; email templates (PI: Nirali standard, TI: Nirali standard) with live template switcher; PROGRAM dropdown with auto-fill from product list; Add Freight button; max 3 program rows — adds: Product master (ADD PRODUCT, PRODUCT LIST, CSV import, OFFLINE/ONLINE/OTHER categories, MOVE button), multi-line invoice items (Add another program), dynamic Word doc (landscape, LMI South Asia header, QTY column, no freight row, multi-item rows), delete receivable PI ripple, date of supply pre-fill, cancel invoice retains delete button. — fix: Word download uses Packer.toBlob (browser-compatible) instead of Packer.toBuffer (Node-only); fix dataset.invWord reference; invBuildWordDoc returns Document not Buffer. — edit PI/TI syncs cashflow receivable amount; cancel vs permanent delete modal; invUpdateReceivableAmount() — header updated to match actual LMI India letterhead (LMI INDIA branding, Apeejay House address, CIN, email/web/tel, logo placeholder), footer updated.
+   VERSION 2.4.37 — new LMI South Asia header image; Nature OTHER manual entry on PI+TI; email templates (PI: Nirali standard, TI: Nirali standard) with live template switcher; PROGRAM dropdown with auto-fill from product list; Add Freight button; max 3 program rows — adds: Product master (ADD PRODUCT, PRODUCT LIST, CSV import, OFFLINE/ONLINE/OTHER categories, MOVE button), multi-line invoice items (Add another program), dynamic Word doc (landscape, LMI South Asia header, QTY column, no freight row, multi-item rows), delete receivable PI ripple, date of supply pre-fill, cancel invoice retains delete button. — fix: Word download uses Packer.toBlob (browser-compatible) instead of Packer.toBuffer (Node-only); fix dataset.invWord reference; invBuildWordDoc returns Document not Buffer. — edit PI/TI syncs cashflow receivable amount; cancel vs permanent delete modal; invUpdateReceivableAmount() — header updated to match actual LMI India letterhead (LMI INDIA branding, Apeejay House address, CIN, email/web/tel, logo placeholder), footer updated.
    doc output matching exact template layout (15-col table,
    all fields, borders, amounts in words), next number preview,
    invoicing module auto-opens from dashboard buttons.
@@ -989,55 +989,25 @@ function renderRecurringEditor() {
   });
 
   // Capture the current month at the time the modal is opened
-  const recurEditFromMk = DB.selectedMonth;
-
   document.getElementById('rec-save').onclick = () => {
-    // Read new amounts from inputs — track what changed
-    const changes = {}; // name -> newAmount
+    // Update template reference amounts only.
+    // Month payment rows in Supabase are independent records — never overwritten here.
+    // The new template amount will seed only months not yet populated.
+    // To change an existing month's recurring payment, use the pencil on that payment.
     document.querySelectorAll('[data-rec-idx]').forEach(inp => {
       const idx = parseInt(inp.dataset.recIdx, 10);
-      const tpl = DB.recurringTemplate[idx];
-      const newAmt = parseFloat(inp.value) || 0;
-      if (tpl) {
-        if (newAmt !== tpl.amount) changes[tpl.name.toLowerCase()] = newAmt;
-        tpl.amount = newAmt;
-        delete tpl.effectiveFrom; // clean up any previous effectiveFrom
+      if (DB.recurringTemplate[idx]) {
+        DB.recurringTemplate[idx].amount = parseFloat(inp.value) || 0;
       }
     });
-
-    // Directly update payments in recurEditFromMk and future months only
-    // Never touch months before recurEditFromMk
-    if (Object.keys(changes).length > 0) {
-      const fyMonths = monthsOfFY(fyLabelForMonth(recurEditFromMk))
-        .filter(mk => mk >= recurEditFromMk);
-      fyMonths.forEach(mk => {
-        const m = DB.months[mk];
-        if (!m) return;
-        (m.payments || []).forEach(p => {
-          if (!p.recurring || p.status === 'paid') return;
-          const nameKey = p.name.toLowerCase().replace(/\s+for\s+.+$/i, '').trim();
-          if (changes[nameKey] !== undefined) {
-            p.amount = changes[nameKey];
-          }
-        });
-      });
-
-      // Save only the touched future months — explicitly bypass selectedMonth auto-include
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(DB));
-      if (window.Cloud && Cloud.cloudConfigured() && Cloud.currentUser) {
-        Cloud.setSyncStatus('saving');
-        Cloud.queueCloudSave(null); // workspace (template)
-        fyMonths.forEach(mk => {
-          if (DB.months[mk]) Cloud.queueCloudSave(mk);
-        });
-      }
-    } else {
-      // No amount changes — just save template (e.g. frequency change)
-      saveDB([]);
+    // Save workspace only — no month rows touched
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(DB));
+    if (window.Cloud && Cloud.cloudConfigured() && Cloud.currentUser) {
+      Cloud.setSyncStatus('saving');
+      Cloud.queueCloudSave(null);
     }
-
     renderAll(); closeModal();
-    toast(`Recurring payments updated from ${monthLabel(recurEditFromMk)} onward`);
+    toast('Recurring template saved. To change an existing month\'s amount, edit that payment directly.');
   };
 }
 

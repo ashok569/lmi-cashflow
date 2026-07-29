@@ -1,6 +1,6 @@
 /* ===========================================================
    LMI Cashflow Manager — application logic
-   VERSION 2.4.42 — new LMI South Asia header image; Nature OTHER manual entry on PI+TI; email templates (PI: Nirali standard, TI: Nirali standard) with live template switcher; PROGRAM dropdown with auto-fill from product list; Add Freight button; max 3 program rows — adds: Product master (ADD PRODUCT, PRODUCT LIST, CSV import, OFFLINE/ONLINE/OTHER categories, MOVE button), multi-line invoice items (Add another program), dynamic Word doc (landscape, LMI South Asia header, QTY column, no freight row, multi-item rows), delete receivable PI ripple, date of supply pre-fill, cancel invoice retains delete button. — fix: Word download uses Packer.toBlob (browser-compatible) instead of Packer.toBuffer (Node-only); fix dataset.invWord reference; invBuildWordDoc returns Document not Buffer. — edit PI/TI syncs cashflow receivable amount; cancel vs permanent delete modal; invUpdateReceivableAmount() — header updated to match actual LMI India letterhead (LMI INDIA branding, Apeejay House address, CIN, email/web/tel, logo placeholder), footer updated.
+   VERSION 2.4.44 — new LMI South Asia header image; Nature OTHER manual entry on PI+TI; email templates (PI: Nirali standard, TI: Nirali standard) with live template switcher; PROGRAM dropdown with auto-fill from product list; Add Freight button; max 3 program rows — adds: Product master (ADD PRODUCT, PRODUCT LIST, CSV import, OFFLINE/ONLINE/OTHER categories, MOVE button), multi-line invoice items (Add another program), dynamic Word doc (landscape, LMI South Asia header, QTY column, no freight row, multi-item rows), delete receivable PI ripple, date of supply pre-fill, cancel invoice retains delete button. — fix: Word download uses Packer.toBlob (browser-compatible) instead of Packer.toBuffer (Node-only); fix dataset.invWord reference; invBuildWordDoc returns Document not Buffer. — edit PI/TI syncs cashflow receivable amount; cancel vs permanent delete modal; invUpdateReceivableAmount() — header updated to match actual LMI India letterhead (LMI INDIA branding, Apeejay House address, CIN, email/web/tel, logo placeholder), footer updated.
    doc output matching exact template layout (15-col table,
    all fields, borders, amounts in words), next number preview,
    invoicing module auto-opens from dashboard buttons.
@@ -1034,6 +1034,9 @@ function applyRecurringForward(fromMk) {
   const months = monthsOfFY(fyLabelForMonth(fromMk)).filter(mk => mk >= fromMk);
 
   months.forEach(mk => {
+    // Hard guard — never seed into past months regardless of fromMk
+    if (mk < todayMonthKey()) return;
+
     const m = ensureMonthExists(mk);
     const mkDate = new Date(mk + '-01');
     const mkMonthIdx = mkDate.getMonth();
@@ -1745,6 +1748,11 @@ function deleteReceivable(id) {
 function ensureMonthlyProvisions(mk) {
   const m = ensureMonthExists(mk);
   m._provisioned = true;
+
+  // NEVER seed recurring entries into past months
+  // Past months are historical records — only current month and future get seeded
+  const isPast = mk < todayMonthKey();
+
   const mkDate = new Date(mk + '-01');
   const mkMonthIdx = mkDate.getMonth();
   const mkMonthShort = MONTHS_SHORT[mkMonthIdx];
@@ -1755,14 +1763,26 @@ function ensureMonthlyProvisions(mk) {
     const startIdx = MONTHS_SHORT.indexOf(startMonth);
 
     let applies = false;
-    if (freq === 'monthly') applies = true;
+    // For monthly: applies from startMonth onwards (don't seed before startMonth)
+    const monthsFromStart = (mkMonthIdx - startIdx + 12) % 12;
+    if (freq === 'monthly') applies = true; // monthly is always applicable once past startMonth
     else if (freq === 'quarterly') applies = (mkMonthIdx - startIdx + 12) % 12 % 3 === 0;
     else if (freq === 'annual') applies = mkMonthShort === startMonth;
     if (!applies) return;
+    // Additional check: if startMonth is specified, don't seed this month if it's before startMonth
+    // This prevents a new item added with startMonth=Aug from appearing in Jul
+    if (tpl.startMonth && tpl.startMonth !== 'Jan') {
+      // Convert startMonth to a month key for comparison
+      const startMk = mk.slice(0,5) + String(MONTHS_SHORT.indexOf(tpl.startMonth) + 1).padStart(2,'0');
+      // If this month is before startMonth in the same year, skip
+      if (mk < startMk && mk.slice(0,4) === startMk.slice(0,4)) return;
+    }
 
     const existing = m.payments.find(p => p.recurring &&
       p.name.toLowerCase().replace(/\s+for\s+.+$/i, '') === tpl.name.toLowerCase());
-    if (!existing) {
+
+    if (!existing && !isPast) {
+      // Only create in current/future months — never inject into past
       const tplAmount = (tpl.effectiveFrom && mk < tpl.effectiveFrom) ? 0 : tpl.amount;
       console.log(`[Provision] CREATING "${tpl.name}" in ${mk} at ${tplAmount}`);
       m.payments.push({
@@ -1775,6 +1795,8 @@ function ensureMonthlyProvisions(mk) {
         tds: !!tpl.tds,
         _locked: true,
       });
+    } else if (!existing && isPast) {
+      console.log(`[Provision] SKIPPING past month ${mk} for "${tpl.name}"`);
     } else {
       console.log(`[Provision] SKIPPING existing "${existing.name}" in ${mk} (locked=${existing._locked})`);
     }

@@ -1,6 +1,6 @@
 /* ===========================================================
    LMI Cashflow Manager — application logic
-   VERSION 2.4.37 — new LMI South Asia header image; Nature OTHER manual entry on PI+TI; email templates (PI: Nirali standard, TI: Nirali standard) with live template switcher; PROGRAM dropdown with auto-fill from product list; Add Freight button; max 3 program rows — adds: Product master (ADD PRODUCT, PRODUCT LIST, CSV import, OFFLINE/ONLINE/OTHER categories, MOVE button), multi-line invoice items (Add another program), dynamic Word doc (landscape, LMI South Asia header, QTY column, no freight row, multi-item rows), delete receivable PI ripple, date of supply pre-fill, cancel invoice retains delete button. — fix: Word download uses Packer.toBlob (browser-compatible) instead of Packer.toBuffer (Node-only); fix dataset.invWord reference; invBuildWordDoc returns Document not Buffer. — edit PI/TI syncs cashflow receivable amount; cancel vs permanent delete modal; invUpdateReceivableAmount() — header updated to match actual LMI India letterhead (LMI INDIA branding, Apeejay House address, CIN, email/web/tel, logo placeholder), footer updated.
+   VERSION 2.4.38 — new LMI South Asia header image; Nature OTHER manual entry on PI+TI; email templates (PI: Nirali standard, TI: Nirali standard) with live template switcher; PROGRAM dropdown with auto-fill from product list; Add Freight button; max 3 program rows — adds: Product master (ADD PRODUCT, PRODUCT LIST, CSV import, OFFLINE/ONLINE/OTHER categories, MOVE button), multi-line invoice items (Add another program), dynamic Word doc (landscape, LMI South Asia header, QTY column, no freight row, multi-item rows), delete receivable PI ripple, date of supply pre-fill, cancel invoice retains delete button. — fix: Word download uses Packer.toBlob (browser-compatible) instead of Packer.toBuffer (Node-only); fix dataset.invWord reference; invBuildWordDoc returns Document not Buffer. — edit PI/TI syncs cashflow receivable amount; cancel vs permanent delete modal; invUpdateReceivableAmount() — header updated to match actual LMI India letterhead (LMI INDIA branding, Apeejay House address, CIN, email/web/tel, logo placeholder), footer updated.
    doc output matching exact template layout (15-col table,
    all fields, borders, amounts in words), next number preview,
    invoicing module auto-opens from dashboard buttons.
@@ -369,10 +369,14 @@ function selectMonth(mk) {
   if (isNew || needsHealing) {
     ensureMonthlyProvisions(mk);
   }
-  // Always recompute: prev month's TDS flows into mk, and mk's TDS flows into next month
+  // Recompute TDS: only if the months involved are current or future
   const prevMk = prevMonthKey(mk);
-  if (DB.months[prevMk]) recalcTDSRollup(prevMk); // seeds mk's TDS provisional from prev month
-  recalcTDSRollup(mk); // seeds next month's TDS provisional from mk
+  if (prevMk >= todayMonthKey()) {
+    if (DB.months[prevMk]) recalcTDSRollup(prevMk);
+  }
+  if (mk >= todayMonthKey()) {
+    recalcTDSRollup(mk);
+  }
   if (DB.months[prevMk]) touched.push(prevMk);
   return touched;
 }
@@ -1789,22 +1793,23 @@ function recalcTDSRollup(mk) {
 
   const flagged = m.payments.filter(p => p.tds && p.amount > 0);
   const tdsFromPayments = flagged.reduce((s, p) => {
-    const rate = (p.tdsRate || 10) / 100; // default to 10% for legacy entries
+    const rate = (p.tdsRate || 10) / 100;
     return s + (Number(p.amount) || 0) * rate;
   }, 0);
   const totalAmt = baseAmt + tdsFromPayments;
 
   const nextMk = nextMonthKey(mk);
+  // Never overwrite past months — only update current month and future
+  if (nextMk < todayMonthKey()) return;
+
   const nm = ensureMonthExists(nextMk);
   let tdsLine = nm.payments.find(p => /^TDS provisional/i.test(p.name));
   if (!tdsLine) {
     tdsLine = { id: uid(), name: `TDS provisional for ${monthLabel(nextMk)}`, amount: totalAmt, status: 'planned', recurring: true, frequency: 'monthly', tds: false };
     nm.payments.push(tdsLine);
   } else {
-    // Only update if NOT already paid — don't overwrite a paid TDS amount
     if (tdsLine.status !== 'paid') tdsLine.amount = totalAmt;
   }
-  // Store breakdown for popup display
   tdsLine._tdsBreakdown = { base: baseAmt, fromPayments: tdsFromPayments, sourceMonth: mk };
 }
 

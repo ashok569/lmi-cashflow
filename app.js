@@ -1,6 +1,6 @@
 /* ===========================================================
    LMI Cashflow Manager — application logic
-   VERSION 2.4.44 — new LMI South Asia header image; Nature OTHER manual entry on PI+TI; email templates (PI: Nirali standard, TI: Nirali standard) with live template switcher; PROGRAM dropdown with auto-fill from product list; Add Freight button; max 3 program rows — adds: Product master (ADD PRODUCT, PRODUCT LIST, CSV import, OFFLINE/ONLINE/OTHER categories, MOVE button), multi-line invoice items (Add another program), dynamic Word doc (landscape, LMI South Asia header, QTY column, no freight row, multi-item rows), delete receivable PI ripple, date of supply pre-fill, cancel invoice retains delete button. — fix: Word download uses Packer.toBlob (browser-compatible) instead of Packer.toBuffer (Node-only); fix dataset.invWord reference; invBuildWordDoc returns Document not Buffer. — edit PI/TI syncs cashflow receivable amount; cancel vs permanent delete modal; invUpdateReceivableAmount() — header updated to match actual LMI India letterhead (LMI INDIA branding, Apeejay House address, CIN, email/web/tel, logo placeholder), footer updated.
+   VERSION 2.4.45 — new LMI South Asia header image; Nature OTHER manual entry on PI+TI; email templates (PI: Nirali standard, TI: Nirali standard) with live template switcher; PROGRAM dropdown with auto-fill from product list; Add Freight button; max 3 program rows — adds: Product master (ADD PRODUCT, PRODUCT LIST, CSV import, OFFLINE/ONLINE/OTHER categories, MOVE button), multi-line invoice items (Add another program), dynamic Word doc (landscape, LMI South Asia header, QTY column, no freight row, multi-item rows), delete receivable PI ripple, date of supply pre-fill, cancel invoice retains delete button. — fix: Word download uses Packer.toBlob (browser-compatible) instead of Packer.toBuffer (Node-only); fix dataset.invWord reference; invBuildWordDoc returns Document not Buffer. — edit PI/TI syncs cashflow receivable amount; cancel vs permanent delete modal; invUpdateReceivableAmount() — header updated to match actual LMI India letterhead (LMI INDIA branding, Apeejay House address, CIN, email/web/tel, logo placeholder), footer updated.
    doc output matching exact template layout (15-col table,
    all fields, borders, amounts in words), next number preview,
    invoicing module auto-opens from dashboard buttons.
@@ -896,7 +896,8 @@ function renderRecurringEditor() {
   const quarterly = list.filter(r => r.frequency === 'quarterly');
   const annual   = list.filter(r => r.frequency === 'annual');
 
-  function itemRow(r, i) {
+  function itemRow(r) {
+    const i = DB.recurringTemplate.indexOf(r); // actual index in template array
     return `
       <div class="sub-list-item" style="cursor:default; display:flex; align-items:center; gap:6px;">
         ${freqBadge(r.frequency)}
@@ -907,21 +908,21 @@ function renderRecurringEditor() {
       </div>`;
   }
 
-  function section(label, color, items, startIdx) {
+  function section(label, color, items) {
     if (!items.length) return '';
     return `
       <div style="font-size:11px;font-weight:700;color:${color};text-transform:uppercase;
                   letter-spacing:.07em;padding:8px 0 4px;border-bottom:2px solid ${color}22;
                   margin-top:10px;">${label}</div>
-      ${items.map((r, i) => itemRow(r, startIdx + i)).join('')}`;
+      ${items.map(r => itemRow(r)).join('')}`;
   }
 
   const body = `
     <div class="sub-list" id="rec-edit-list" style="max-height:340px;overflow-y:auto;">
       ${!list.length ? '<div class="empty-note" style="padding:12px;">No recurring items yet.</div>' : ''}
-      ${section('Monthly', '#1e4f8a', monthly, 0)}
-      ${section('Quarterly', '#1f7a4d', quarterly, monthly.length)}
-      ${section('Annual', '#9a6b14', annual, monthly.length + quarterly.length)}
+      ${section('Monthly', '#1e4f8a', monthly)}
+      ${section('Quarterly', '#1f7a4d', quarterly)}
+      ${section('Annual', '#9a6b14', annual)}
     </div>
     <div class="hint" style="margin:10px 0 6px;">Saving applies these to ${monthLabel(DB.selectedMonth)} and forward this FY. Quarterly and Annual items only appear in their applicable months.</div>
     <button class="btn btn-sm" id="rec-add-new">+ Add recurring item</button>`;

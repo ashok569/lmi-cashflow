@@ -1,6 +1,6 @@
 /* ===========================================================
    LMI Cashflow Manager — application logic
-   VERSION 2.4.39 — new LMI South Asia header image; Nature OTHER manual entry on PI+TI; email templates (PI: Nirali standard, TI: Nirali standard) with live template switcher; PROGRAM dropdown with auto-fill from product list; Add Freight button; max 3 program rows — adds: Product master (ADD PRODUCT, PRODUCT LIST, CSV import, OFFLINE/ONLINE/OTHER categories, MOVE button), multi-line invoice items (Add another program), dynamic Word doc (landscape, LMI South Asia header, QTY column, no freight row, multi-item rows), delete receivable PI ripple, date of supply pre-fill, cancel invoice retains delete button. — fix: Word download uses Packer.toBlob (browser-compatible) instead of Packer.toBuffer (Node-only); fix dataset.invWord reference; invBuildWordDoc returns Document not Buffer. — edit PI/TI syncs cashflow receivable amount; cancel vs permanent delete modal; invUpdateReceivableAmount() — header updated to match actual LMI India letterhead (LMI INDIA branding, Apeejay House address, CIN, email/web/tel, logo placeholder), footer updated.
+   VERSION 2.4.41 — new LMI South Asia header image; Nature OTHER manual entry on PI+TI; email templates (PI: Nirali standard, TI: Nirali standard) with live template switcher; PROGRAM dropdown with auto-fill from product list; Add Freight button; max 3 program rows — adds: Product master (ADD PRODUCT, PRODUCT LIST, CSV import, OFFLINE/ONLINE/OTHER categories, MOVE button), multi-line invoice items (Add another program), dynamic Word doc (landscape, LMI South Asia header, QTY column, no freight row, multi-item rows), delete receivable PI ripple, date of supply pre-fill, cancel invoice retains delete button. — fix: Word download uses Packer.toBlob (browser-compatible) instead of Packer.toBuffer (Node-only); fix dataset.invWord reference; invBuildWordDoc returns Document not Buffer. — edit PI/TI syncs cashflow receivable amount; cancel vs permanent delete modal; invUpdateReceivableAmount() — header updated to match actual LMI India letterhead (LMI INDIA branding, Apeejay House address, CIN, email/web/tel, logo placeholder), footer updated.
    doc output matching exact template layout (15-col table,
    all fields, borders, amounts in words), next number preview,
    invoicing module auto-opens from dashboard buttons.
@@ -987,8 +987,19 @@ function renderRecurringEditor() {
 
   document.querySelectorAll('[data-rec-del]').forEach(b => {
     b.onclick = () => {
-      DB.recurringTemplate.splice(parseInt(b.dataset.recDel, 10), 1);
+      const idx = parseInt(b.dataset.recDel, 10);
+      const tpl = DB.recurringTemplate[idx];
+      if (!tpl) return;
+      if (!confirm(`Remove "${tpl.name}" from recurring payments?\n\nPast month entries are NOT affected — only future unvisited months will stop being seeded.`)) return;
+      DB.recurringTemplate.splice(idx, 1);
+      // Save workspace immediately
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(DB));
+      if (window.Cloud && Cloud.cloudConfigured() && Cloud.currentUser) {
+        Cloud.setSyncStatus('saving');
+        Cloud.queueCloudSave(null);
+      }
       renderRecurringEditor();
+      toast(`"${tpl.name}" removed from recurring template`);
     };
   });
 
@@ -1733,13 +1744,9 @@ function deleteReceivable(id) {
    =========================================================== */
 function ensureMonthlyProvisions(mk) {
   const m = ensureMonthExists(mk);
-
-  // Mark as provisioned — prevents re-provisioning if user deletes items they don't want
   m._provisioned = true;
-
-  // Recurring (starred) payments — respect frequency and startMonth
   const mkDate = new Date(mk + '-01');
-  const mkMonthIdx = mkDate.getMonth(); // 0=Jan
+  const mkMonthIdx = mkDate.getMonth();
   const mkMonthShort = MONTHS_SHORT[mkMonthIdx];
 
   DB.recurringTemplate.forEach(tpl => {
@@ -1748,23 +1755,16 @@ function ensureMonthlyProvisions(mk) {
     const startIdx = MONTHS_SHORT.indexOf(startMonth);
 
     let applies = false;
-    if (freq === 'monthly') {
-      applies = true;
-    } else if (freq === 'quarterly') {
-      const diff = (mkMonthIdx - startIdx + 12) % 12;
-      applies = diff % 3 === 0;
-    } else if (freq === 'annual') {
-      applies = mkMonthShort === startMonth;
-    }
+    if (freq === 'monthly') applies = true;
+    else if (freq === 'quarterly') applies = (mkMonthIdx - startIdx + 12) % 12 % 3 === 0;
+    else if (freq === 'annual') applies = mkMonthShort === startMonth;
     if (!applies) return;
 
     const existing = m.payments.find(p => p.recurring &&
       p.name.toLowerCase().replace(/\s+for\s+.+$/i, '') === tpl.name.toLowerCase());
     if (!existing) {
-      // Use effectiveFrom-aware amount
-      const tplAmount = (tpl.effectiveFrom && mk < tpl.effectiveFrom)
-        ? 0  // shouldn't seed with future amount in past month
-        : tpl.amount;
+      const tplAmount = (tpl.effectiveFrom && mk < tpl.effectiveFrom) ? 0 : tpl.amount;
+      console.log(`[Provision] CREATING "${tpl.name}" in ${mk} at ${tplAmount}`);
       m.payments.push({
         id: uid(),
         name: `${tpl.name} for ${monthLabel(mk)}`,
@@ -1775,9 +1775,10 @@ function ensureMonthlyProvisions(mk) {
         tds: !!tpl.tds,
         _locked: true,
       });
+    } else {
+      console.log(`[Provision] SKIPPING existing "${existing.name}" in ${mk} (locked=${existing._locked})`);
     }
   });
-
   return m;
 }
 
@@ -1799,8 +1800,10 @@ function recalcTDSRollup(mk) {
   const totalAmt = baseAmt + tdsFromPayments;
 
   const nextMk = nextMonthKey(mk);
-  // Never overwrite past months — only update current month and future
-  if (nextMk < todayMonthKey()) return;
+  if (nextMk < todayMonthKey()) {
+    console.log(`[TDSRollup] SKIPPED past month: ${nextMk} (today=${todayMonthKey()})`);
+    return;
+  }
 
   const nm = ensureMonthExists(nextMk);
   let tdsLine = nm.payments.find(p => /^TDS provisional/i.test(p.name));
@@ -1808,7 +1811,10 @@ function recalcTDSRollup(mk) {
     tdsLine = { id: uid(), name: `TDS provisional for ${monthLabel(nextMk)}`, amount: totalAmt, status: 'planned', recurring: true, frequency: 'monthly', tds: false, _locked: true };
     nm.payments.push(tdsLine);
   } else {
-    if (tdsLine.status !== 'paid') tdsLine.amount = totalAmt;
+    if (tdsLine.status !== 'paid') {
+      console.log(`[TDSRollup] Updating ${nextMk} TDS from ${tdsLine.amount} to ${totalAmt}`);
+      tdsLine.amount = totalAmt;
+    }
   }
   tdsLine._tdsBreakdown = { base: baseAmt, fromPayments: tdsFromPayments, sourceMonth: mk };
 }

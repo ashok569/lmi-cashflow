@@ -1,6 +1,6 @@
 /* ===========================================================
    LMI Cashflow Manager — application logic
-   VERSION 2.4.47 — new LMI South Asia header image; Nature OTHER manual entry on PI+TI; email templates (PI: Nirali standard, TI: Nirali standard) with live template switcher; PROGRAM dropdown with auto-fill from product list; Add Freight button; max 3 program rows — adds: Product master (ADD PRODUCT, PRODUCT LIST, CSV import, OFFLINE/ONLINE/OTHER categories, MOVE button), multi-line invoice items (Add another program), dynamic Word doc (landscape, LMI South Asia header, QTY column, no freight row, multi-item rows), delete receivable PI ripple, date of supply pre-fill, cancel invoice retains delete button. — fix: Word download uses Packer.toBlob (browser-compatible) instead of Packer.toBuffer (Node-only); fix dataset.invWord reference; invBuildWordDoc returns Document not Buffer. — edit PI/TI syncs cashflow receivable amount; cancel vs permanent delete modal; invUpdateReceivableAmount() — header updated to match actual LMI India letterhead (LMI INDIA branding, Apeejay House address, CIN, email/web/tel, logo placeholder), footer updated.
+   VERSION 2.4.48 — new LMI South Asia header image; Nature OTHER manual entry on PI+TI; email templates (PI: Nirali standard, TI: Nirali standard) with live template switcher; PROGRAM dropdown with auto-fill from product list; Add Freight button; max 3 program rows — adds: Product master (ADD PRODUCT, PRODUCT LIST, CSV import, OFFLINE/ONLINE/OTHER categories, MOVE button), multi-line invoice items (Add another program), dynamic Word doc (landscape, LMI South Asia header, QTY column, no freight row, multi-item rows), delete receivable PI ripple, date of supply pre-fill, cancel invoice retains delete button. — fix: Word download uses Packer.toBlob (browser-compatible) instead of Packer.toBuffer (Node-only); fix dataset.invWord reference; invBuildWordDoc returns Document not Buffer. — edit PI/TI syncs cashflow receivable amount; cancel vs permanent delete modal; invUpdateReceivableAmount() — header updated to match actual LMI India letterhead (LMI INDIA branding, Apeejay House address, CIN, email/web/tel, logo placeholder), footer updated.
    doc output matching exact template layout (15-col table,
    all fields, borders, amounts in words), next number preview,
    invoicing module auto-opens from dashboard buttons.
@@ -403,7 +403,13 @@ function renderMonthTabs() {
     btn.onclick = () => {
       closePendingActions();
       closeInvoicingModule();
+      console.log(`[tab-click] Clicking ${btn.dataset.mk}, July payments before selectMonth:`);
+      const jm = DB.months['2026-07'];
+      if (jm) jm.payments.filter(p=>p.recurring).forEach(p=>console.log(`  - ${p.name} ${p.amount}`));
       const touched = selectMonth(btn.dataset.mk);
+      console.log(`[tab-click] July payments after selectMonth:`);
+      const jm2 = DB.months['2026-07'];
+      if (jm2) jm2.payments.filter(p=>p.recurring).forEach(p=>console.log(`  - ${p.name} ${p.amount}`));
       saveDB(touched);
       renderAll();
     };
@@ -1022,7 +1028,16 @@ function renderRecurringEditor() {
       Cloud.setSyncStatus('saving');
       Cloud.queueCloudSave(null);
     }
+    // DIAGNOSTIC: log July payments immediately after save
+    const julyMk = '2026-07';
+    const julyM = DB.months[julyMk];
+    console.log(`[rec-save] July payments after save (${julyM ? julyM.payments.length : 0} items):`);
+    if (julyM) julyM.payments.filter(p=>p.recurring).forEach(p => console.log(`  - ${p.name} ${p.amount}`));
     renderAll(); closeModal();
+    // DIAGNOSTIC: log July after renderAll
+    const julyM2 = DB.months[julyMk];
+    console.log(`[rec-save] July payments after renderAll (${julyM2 ? julyM2.payments.length : 0} items):`);
+    if (julyM2) julyM2.payments.filter(p=>p.recurring).forEach(p => console.log(`  - ${p.name} ${p.amount}`));
     toast('Recurring template saved. To change an existing month\'s amount, edit that payment directly.');
   };
 }
@@ -5518,6 +5533,7 @@ function openLicFeeModule() {
   document.getElementById('lf-close-btn').onclick = closeLicFeeModule;
   document.getElementById('lf-btn-add').onclick = licFeeOpenAdd;
   document.getElementById('lf-btn-receipt').onclick = licFeeOpenReceipt;
+  document.getElementById('lf-btn-comment').onclick = licFeeOpenComment;
 }
 
 function closeLicFeeModule() {
@@ -5542,11 +5558,12 @@ function licFeeRender() {
     const recovered = lf.recovered || 0;
     const feeDue = lf.feeDue || 0;
     const balance = feeDue - recovered;
-    const pct = feeDue > 0 ? Math.round((recovered / feeDue) * 100) : 0;
     const balColor = balance <= 0 ? 'color:#2e7d5e;font-weight:700;' : balance > feeDue * 0.5 ? 'color:#c0392b;' : 'color:#9a6b14;';
+    const comment = lf.comment ? escapeHtml(lf.comment.slice(0,25)) : '';
     return `
       <tr>
         <td style="font-weight:600; color:var(--navy);">${escapeHtml(lf.name)}</td>
+        <td style="font-size:12px; color:var(--ink-soft); max-width:140px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${escapeHtml(lf.comment||'')}">${comment}</td>
         <td style="font-family:var(--mono); text-align:right;">${fmtMoney(feeDue)}</td>
         <td style="font-family:var(--mono); text-align:right; color:#2e7d5e;">${fmtMoney(recovered)}</td>
         <td style="font-family:var(--mono); text-align:right; ${balColor}">${fmtMoney(balance)}</td>
@@ -5566,6 +5583,7 @@ function licFeeRender() {
       <thead>
         <tr style="background:var(--navy); color:#fff; text-transform:uppercase; font-size:11px; letter-spacing:.06em;">
           <th style="padding:10px 12px; text-align:left;">Licensee</th>
+          <th style="padding:10px 12px; text-align:left;">Comment</th>
           <th style="padding:10px 12px; text-align:right;">Fee Due</th>
           <th style="padding:10px 12px; text-align:right;">Recovered</th>
           <th style="padding:10px 12px; text-align:right;">Balance</th>
@@ -5573,22 +5591,11 @@ function licFeeRender() {
           <th style="padding:10px 12px;"></th>
         </tr>
       </thead>
-      <tbody>
-        ${rows}
-      </tbody>
+      <tbody>${rows}</tbody>
     </table>`;
 
-  // Wire info buttons
-  wrap.querySelectorAll('[data-lf-info]').forEach(b => {
-    b.onclick = () => licFeeShowBreakdown(b.dataset.lfInfo);
-  });
-
-  // Wire edit buttons
-  wrap.querySelectorAll('[data-lf-edit]').forEach(b => {
-    b.onclick = () => licFeeOpenEdit(b.dataset.lfEdit);
-  });
-
-  // Wire delete buttons
+  wrap.querySelectorAll('[data-lf-info]').forEach(b => { b.onclick = () => licFeeShowBreakdown(b.dataset.lfInfo); });
+  wrap.querySelectorAll('[data-lf-edit]').forEach(b => { b.onclick = () => licFeeOpenEdit(b.dataset.lfEdit); });
   wrap.querySelectorAll('[data-lf-del]').forEach(b => {
     b.onclick = () => {
       const lf = DB.licFees.find(x => x.id === b.dataset.lfDel);
@@ -5606,6 +5613,8 @@ function licFeeOpenAdd() {
   const body = `
     <div class="field"><label>Licensee name</label>
       <input type="text" id="lf-name" placeholder="e.g. Carpe Diem Leadership"></div>
+    <div class="field"><label>Comment <span style="color:var(--ink-soft);font-weight:400;">(max 25 chars)</span></label>
+      <input type="text" id="lf-comment" placeholder="Short note" maxlength="25"></div>
     <div class="field-row">
       <div class="field"><label>Fee due (₹)</label>
         <input type="number" id="lf-fee" placeholder="0"></div>
@@ -5622,10 +5631,11 @@ function licFeeOpenAdd() {
   document.getElementById('lf-add-cancel').onclick = closeModal;
   document.getElementById('lf-add-save').onclick = () => {
     const name = document.getElementById('lf-name').value.trim();
+    const comment = document.getElementById('lf-comment').value.trim().slice(0,25);
     const feeDue = parseFloat(document.getElementById('lf-fee').value) || 0;
     const type = document.getElementById('lf-type').value;
     if (!name) { toast('Name is required'); return; }
-    DB.licFees.push({ id: uid(), name, feeDue, type, recovered: 0, instalments: [] });
+    DB.licFees.push({ id: uid(), name, comment, feeDue, type, recovered: 0, instalments: [] });
     saveDB(); closeModal(); licFeeRender();
     toast(`"${name}" added`);
   };
@@ -5638,6 +5648,8 @@ function licFeeOpenEdit(id) {
   const body = `
     <div class="field"><label>Licensee name</label>
       <input type="text" id="lf-name" value="${escapeHtml(lf.name)}"></div>
+    <div class="field"><label>Comment <span style="color:var(--ink-soft);font-weight:400;">(max 25 chars)</span></label>
+      <input type="text" id="lf-comment" value="${escapeHtml(lf.comment||'')}" maxlength="25"></div>
     <div class="field-row">
       <div class="field"><label>Fee due (₹)</label>
         <input type="number" id="lf-fee" value="${lf.feeDue || 0}"></div>
@@ -5654,10 +5666,57 @@ function licFeeOpenEdit(id) {
   document.getElementById('lf-edit-cancel').onclick = closeModal;
   document.getElementById('lf-edit-save').onclick = () => {
     lf.name = document.getElementById('lf-name').value.trim() || lf.name;
+    lf.comment = document.getElementById('lf-comment').value.trim().slice(0,25);
     lf.feeDue = parseFloat(document.getElementById('lf-fee').value) || 0;
     lf.type = document.getElementById('lf-type').value;
     saveDB(); closeModal(); licFeeRender();
     toast(`"${lf.name}" updated`);
+  };
+}
+
+// ── Comment ─────────────────────────────────────────────────
+function licFeeOpenComment() {
+  licFeeInit();
+  if (!DB.licFees.length) { toast('Add a licensee first'); return; }
+  const body = `
+    <div class="field"><label>Licensee</label>
+      <select id="lf-cmt-who">
+        ${DB.licFees.map(lf => `<option value="${lf.id}">${escapeHtml(lf.name)}</option>`).join('')}
+      </select>
+    </div>
+    <div class="field">
+      <label>Comment <span style="color:var(--ink-soft);font-weight:400;">(max 25 chars)</span></label>
+      <input type="text" id="lf-cmt-text" maxlength="25" placeholder="Short note e.g. Pending docs">
+      <div style="font-size:11px;color:var(--ink-soft);margin-top:3px;" id="lf-cmt-count">0 / 25</div>
+    </div>`;
+  openModal('Add Comment', body,
+    `<button class="btn" id="lf-cmt-cancel">Cancel</button>
+     <button class="btn btn-primary" id="lf-cmt-save">Save</button>`);
+  document.getElementById('lf-cmt-cancel').onclick = closeModal;
+
+  // Live character counter
+  const inp = document.getElementById('lf-cmt-text');
+  const counter = document.getElementById('lf-cmt-count');
+  inp.oninput = () => { counter.textContent = `${inp.value.length} / 25`; };
+
+  // Pre-fill with existing comment when licensee changes
+  const sel = document.getElementById('lf-cmt-who');
+  sel.onchange = () => {
+    const lf = DB.licFees.find(x => x.id === sel.value);
+    if (lf) { inp.value = lf.comment || ''; counter.textContent = `${inp.value.length} / 25`; }
+  };
+  // Pre-fill for first selection
+  const firstLf = DB.licFees.find(x => x.id === sel.value);
+  if (firstLf) { inp.value = firstLf.comment || ''; counter.textContent = `${inp.value.length} / 25`; }
+
+  document.getElementById('lf-cmt-save').onclick = () => {
+    const id = document.getElementById('lf-cmt-who').value;
+    const comment = document.getElementById('lf-cmt-text').value.trim().slice(0,25);
+    const lf = DB.licFees.find(x => x.id === id);
+    if (!lf) return;
+    lf.comment = comment;
+    saveDB(); closeModal(); licFeeRender();
+    toast(`Comment saved for "${lf.name}"`);
   };
 }
 

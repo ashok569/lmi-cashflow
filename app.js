@@ -1,6 +1,6 @@
 /* ===========================================================
    LMI Cashflow Manager — application logic
-   VERSION 2.4.48 — new LMI South Asia header image; Nature OTHER manual entry on PI+TI; email templates (PI: Nirali standard, TI: Nirali standard) with live template switcher; PROGRAM dropdown with auto-fill from product list; Add Freight button; max 3 program rows — adds: Product master (ADD PRODUCT, PRODUCT LIST, CSV import, OFFLINE/ONLINE/OTHER categories, MOVE button), multi-line invoice items (Add another program), dynamic Word doc (landscape, LMI South Asia header, QTY column, no freight row, multi-item rows), delete receivable PI ripple, date of supply pre-fill, cancel invoice retains delete button. — fix: Word download uses Packer.toBlob (browser-compatible) instead of Packer.toBuffer (Node-only); fix dataset.invWord reference; invBuildWordDoc returns Document not Buffer. — edit PI/TI syncs cashflow receivable amount; cancel vs permanent delete modal; invUpdateReceivableAmount() — header updated to match actual LMI India letterhead (LMI INDIA branding, Apeejay House address, CIN, email/web/tel, logo placeholder), footer updated.
+   VERSION 2.4.49 — new LMI South Asia header image; Nature OTHER manual entry on PI+TI; email templates (PI: Nirali standard, TI: Nirali standard) with live template switcher; PROGRAM dropdown with auto-fill from product list; Add Freight button; max 3 program rows — adds: Product master (ADD PRODUCT, PRODUCT LIST, CSV import, OFFLINE/ONLINE/OTHER categories, MOVE button), multi-line invoice items (Add another program), dynamic Word doc (landscape, LMI South Asia header, QTY column, no freight row, multi-item rows), delete receivable PI ripple, date of supply pre-fill, cancel invoice retains delete button. — fix: Word download uses Packer.toBlob (browser-compatible) instead of Packer.toBuffer (Node-only); fix dataset.invWord reference; invBuildWordDoc returns Document not Buffer. — edit PI/TI syncs cashflow receivable amount; cancel vs permanent delete modal; invUpdateReceivableAmount() — header updated to match actual LMI India letterhead (LMI INDIA branding, Apeejay House address, CIN, email/web/tel, logo placeholder), footer updated.
    doc output matching exact template layout (15-col table,
    all fields, borders, amounts in words), next number preview,
    invoicing module auto-opens from dashboard buttons.
@@ -862,7 +862,13 @@ function openPaymentReceivedFor(receivableId) {
       if (existingGst) {
         existingGst.amount = (Number(existingGst.amount) || 0) + gstAmt;
         if (!existingGst._gstBreakdown) existingGst._gstBreakdown = { receipts: [] };
-        existingGst._gstBreakdown.receipts.push({ name: rec.name, gst: gstAmt });
+        // Deduplicate: replace existing entry for same receipt name, or add new
+        const bdIdx = existingGst._gstBreakdown.receipts.findIndex(r => r.name === rec.name);
+        if (bdIdx >= 0) {
+          existingGst._gstBreakdown.receipts[bdIdx].gst += gstAmt;
+        } else {
+          existingGst._gstBreakdown.receipts.push({ name: rec.name, gst: gstAmt });
+        }
       } else {
         nm.payments.push({ id: uid(), name: `GST for ${monthLabel(DB.selectedMonth)}`, amount: gstAmt, status: 'planned', recurring: false, tds: false,
           _gstBreakdown: { receipts: [{ name: rec.name, gst: gstAmt }] } });
@@ -1620,35 +1626,45 @@ function _openEditPaymentForm(id) {
         const srcM = DB.months[srcMk];
         const nameMonth = monthLabel(srcMk);
 
-        let rows = '';
+        let displayReceipts = [];
         const bd = p._gstBreakdown;
         if (bd && bd.receipts && bd.receipts.length) {
-          // Stored breakdown — shows exact GST per receipt
-          rows = bd.receipts.map(r =>
+          // Deduplicate by name — keep last occurrence of each receipt name
+          const seen = new Map();
+          bd.receipts.forEach(r => seen.set(r.name, r));
+          displayReceipts = Array.from(seen.values());
+        } else if (srcM && (srcM.receipts || []).some(r => r.gstAmt > 0 || r.gst > 0)) {
+          displayReceipts = (srcM.receipts || [])
+            .filter(r => (r.gstAmt || r.gst || 0) > 0)
+            .map(r => ({ name: r.name, gst: r.gstAmt || r.gst || 0 }));
+        }
+
+        let rows = '';
+        let breakdownTotal = 0;
+        if (displayReceipts.length) {
+          breakdownTotal = displayReceipts.reduce((s, r) => s + (r.gst || 0), 0);
+          rows = displayReceipts.map(r =>
             `<div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--line);font-size:12.5px;">
               <span>${escapeHtml(r.name)}</span><strong>${fmtMoney(r.gst)}</strong>
             </div>`).join('');
-        } else if (srcM && (srcM.receipts || []).some(r => r.gstAmt > 0 || r.gst > 0)) {
-          // Receipts have GST stored — show GST amounts
-          rows = (srcM.receipts || []).filter(r => (r.gstAmt || r.gst || 0) > 0).map(r =>
-            `<div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--line);font-size:12.5px;">
-              <span>${escapeHtml(r.name)}</span><strong>${fmtMoney(r.gstAmt || r.gst || 0)}</strong>
-            </div>`).join('');
         } else if (srcM && (srcM.receipts || []).length) {
-          // Fallback — GST not stored per receipt, just show total note
           rows = `<div style="color:var(--ink-soft);font-size:12.5px;padding:6px 0;">
-            ${(srcM.receipts || []).length} receipt(s) in ${nameMonth} — GST portion not stored per receipt.<br>
-            Total GST liability shown below.
+            ${(srcM.receipts || []).length} receipt(s) in ${nameMonth} — GST portion not stored per receipt.
           </div>`;
         } else {
           rows = `<div style="color:var(--ink-soft);font-size:12.5px;padding:6px 0;">No receipts found in ${nameMonth}.</div>`;
         }
 
+        // Use breakdown total if available and matches stored amount, else show stored with note
+        const shownTotal = breakdownTotal > 0 ? breakdownTotal : p.amount;
+        const totalNote = breakdownTotal > 0 && Math.abs(breakdownTotal - p.amount) > 1
+          ? ` <span style="color:#9a6b14;font-size:11px;">(stored: ${fmtMoney(p.amount)})</span>` : '';
+
         return `<div style="margin-top:14px;border-top:2px solid var(--line);padding-top:10px;">
           <div style="font-size:11px;font-weight:700;color:var(--navy);text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px;">GST Breakdown — from ${nameMonth}</div>
           ${rows}
-          <div style="display:flex;justify-content:space-between;padding:6px 0;font-size:13px;font-weight:700;color:var(--navy);border-top:2px solid var(--navy);margin-top:4px;">
-            <span>Total GST liability</span><span>${fmtMoney(p.amount)}</span>
+          <div style="display:flex;justify-content:space-between;align-items:baseline;padding:6px 0;font-size:13px;font-weight:700;color:var(--navy);border-top:2px solid var(--navy);margin-top:4px;">
+            <span>Total GST${totalNote}</span><span>${fmtMoney(shownTotal)}</span>
           </div>
         </div>`;
       }

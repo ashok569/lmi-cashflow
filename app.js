@@ -1,6 +1,6 @@
 /* ===========================================================
    LMI Cashflow Manager — application logic
-   VERSION 2.4.49 — new LMI South Asia header image; Nature OTHER manual entry on PI+TI; email templates (PI: Nirali standard, TI: Nirali standard) with live template switcher; PROGRAM dropdown with auto-fill from product list; Add Freight button; max 3 program rows — adds: Product master (ADD PRODUCT, PRODUCT LIST, CSV import, OFFLINE/ONLINE/OTHER categories, MOVE button), multi-line invoice items (Add another program), dynamic Word doc (landscape, LMI South Asia header, QTY column, no freight row, multi-item rows), delete receivable PI ripple, date of supply pre-fill, cancel invoice retains delete button. — fix: Word download uses Packer.toBlob (browser-compatible) instead of Packer.toBuffer (Node-only); fix dataset.invWord reference; invBuildWordDoc returns Document not Buffer. — edit PI/TI syncs cashflow receivable amount; cancel vs permanent delete modal; invUpdateReceivableAmount() — header updated to match actual LMI India letterhead (LMI INDIA branding, Apeejay House address, CIN, email/web/tel, logo placeholder), footer updated.
+   VERSION 2.4.50 — new LMI South Asia header image; Nature OTHER manual entry on PI+TI; email templates (PI: Nirali standard, TI: Nirali standard) with live template switcher; PROGRAM dropdown with auto-fill from product list; Add Freight button; max 3 program rows — adds: Product master (ADD PRODUCT, PRODUCT LIST, CSV import, OFFLINE/ONLINE/OTHER categories, MOVE button), multi-line invoice items (Add another program), dynamic Word doc (landscape, LMI South Asia header, QTY column, no freight row, multi-item rows), delete receivable PI ripple, date of supply pre-fill, cancel invoice retains delete button. — fix: Word download uses Packer.toBlob (browser-compatible) instead of Packer.toBuffer (Node-only); fix dataset.invWord reference; invBuildWordDoc returns Document not Buffer. — edit PI/TI syncs cashflow receivable amount; cancel vs permanent delete modal; invUpdateReceivableAmount() — header updated to match actual LMI India letterhead (LMI INDIA branding, Apeejay House address, CIN, email/web/tel, logo placeholder), footer updated.
    doc output matching exact template layout (15-col table,
    all fields, borders, amounts in words), next number preview,
    invoicing module auto-opens from dashboard buttons.
@@ -1660,11 +1660,24 @@ function _openEditPaymentForm(id) {
         const totalNote = breakdownTotal > 0 && Math.abs(breakdownTotal - p.amount) > 1
           ? ` <span style="color:#9a6b14;font-size:11px;">(stored: ${fmtMoney(p.amount)})</span>` : '';
 
+        // If breakdown total differs from stored amount, show a fix button
+        const fixBtn = (breakdownTotal > 0 && Math.abs(breakdownTotal - p.amount) > 1)
+          ? `<div style="margin-top:8px;padding:8px 10px;background:#fff8f0;border:1px solid #dda63a;border-radius:5px;font-size:12px;">
+              ⚠️ Breakdown sum (${fmtMoney(breakdownTotal)}) differs from stored amount (${fmtMoney(p.amount)}).
+              <button data-gst-fix="${p.id}" data-gst-correct="${breakdownTotal}" class="btn btn-sm" style="margin-left:8px;font-size:11px;">Fix to ${fmtMoney(breakdownTotal)}</button>
+             </div>` : '';
+
         return `<div style="margin-top:14px;border-top:2px solid var(--line);padding-top:10px;">
           <div style="font-size:11px;font-weight:700;color:var(--navy);text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px;">GST Breakdown — from ${nameMonth}</div>
           ${rows}
           <div style="display:flex;justify-content:space-between;align-items:baseline;padding:6px 0;font-size:13px;font-weight:700;color:var(--navy);border-top:2px solid var(--navy);margin-top:4px;">
             <span>Total GST${totalNote}</span><span>${fmtMoney(shownTotal)}</span>
+          </div>
+          ${fixBtn}
+          <div style="margin-top:10px;display:flex;gap:8px;align-items:center;">
+            <label style="font-size:11px;color:var(--ink-soft);flex-shrink:0;">Correct stored amount to:</label>
+            <input type="number" id="gst-manual-fix" value="${p.amount}" style="width:120px;padding:4px 8px;border:1px solid var(--line);border-radius:4px;font-family:var(--mono);">
+            <button data-gst-fix="${p.id}" data-gst-use-input="1" class="btn btn-sm">Apply</button>
           </div>
         </div>`;
       }
@@ -1672,6 +1685,20 @@ function _openEditPaymentForm(id) {
     })()}`;
   openModal('Edit payment', body, `<button class="btn" id="ep-cancel">Cancel</button><button class="btn btn-primary" id="ep-save">Save</button>`);
   document.getElementById('ep-cancel').onclick = closeModal;
+  // Wire GST amount fix buttons
+  document.querySelectorAll('[data-gst-fix]').forEach(btn => {
+    btn.onclick = () => {
+      const pid = btn.dataset.gstFix;
+      const pm = getMonth(DB.selectedMonth).payments.find(x => x.id === pid);
+      if (!pm) return;
+      const newAmt = btn.dataset.gstUseInput
+        ? parseFloat(document.getElementById('gst-manual-fix').value) || 0
+        : parseFloat(btn.dataset.gstCorrect) || 0;
+      pm.amount = newAmt;
+      saveDB(); closeModal(); renderAll();
+      toast(`GST amount corrected to ${fmtMoney(newAmt)}`);
+    };
+  });
 
   const statusSel = document.getElementById('ep-status');
   const scheduleField = document.getElementById('ep-schedule-field');
